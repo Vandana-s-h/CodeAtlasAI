@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -10,8 +10,8 @@ type Repository = {
 
 type FileInfo = {
   path: string;
-  language?: string;
-  loc?: number;
+  language: string;
+  loc: number;
 };
 
 type Analysis = {
@@ -28,40 +28,55 @@ type AnalysisResult = {
   status: string;
 };
 
-const EMPTY_ANALYSIS: Analysis = {
-  file_count: 0,
-  loc: 0,
-  languages: {},
-  files: [],
-  files_truncated: false,
+const EMPTY_ANALYSIS: AnalysisResult = {
+  repository: {
+    owner: "",
+    name: "",
+    url: "",
+  },
+  analysis: {
+    file_count: 0,
+    loc: 0,
+    languages: {},
+    files: [],
+    files_truncated: false,
+  },
+  status: "",
 };
 
-function formatNumber(value: number): string {
-  return Number(value || 0).toLocaleString();
+function formatNumber(value: number) {
+  return value.toLocaleString();
 }
 
 function App() {
-  const [repoUrl, setRepoUrl] = useState("");
-  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [url, setUrl] = useState("");
+  const [result, setResult] = useState<AnalysisResult>(EMPTY_ANALYSIS);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  async function analyzeRepository() {
-    const url = repoUrl.trim();
+  const [search, setSearch] = useState("");
+  const [language, setLanguage] = useState("All");
+  const [sortBy, setSortBy] = useState("name");
+  const [selectedFile, setSelectedFile] = useState<FileInfo | null>(null);
 
-    if (!url) {
+  async function analyzeRepository(event: FormEvent) {
+    event.preventDefault();
+
+    if (!url.trim()) {
       setError("Please enter a GitHub repository URL.");
       return;
     }
 
-    if (!url.includes("github.com/")) {
-      setError("Please enter a valid public GitHub repository URL.");
+    if (!url.startsWith("https://github.com/")) {
+      setError(
+        "Only public GitHub repository URLs are supported in V1."
+      );
       return;
     }
 
     setLoading(true);
     setError("");
-    setResult(null);
+    setSelectedFile(null);
 
     try {
       const response = await fetch(
@@ -70,9 +85,10 @@ function App() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            Accept: "application/json",
           },
           body: JSON.stringify({
-            url,
+            url: url.trim(),
           }),
         }
       );
@@ -89,20 +105,18 @@ function App() {
         ? data.analysis.files
         : [];
 
-      const normalizedFiles: FileInfo[] = rawFiles
+      const files: FileInfo[] = rawFiles
         .map((file: unknown) => {
           if (typeof file === "string") {
             return {
               path: file,
+              language: "Unknown",
+              loc: 0,
             };
           }
 
           if (file && typeof file === "object") {
-            const item = file as {
-              path?: unknown;
-              language?: unknown;
-              loc?: unknown;
-            };
+            const item = file as Record<string, unknown>;
 
             return {
               path:
@@ -112,1040 +126,553 @@ function App() {
               language:
                 typeof item.language === "string"
                   ? item.language
-                  : undefined,
+                  : "Unknown",
               loc:
                 typeof item.loc === "number"
                   ? item.loc
-                  : Number(item.loc ?? 0),
+                  : 0,
             };
           }
 
-          return {
-            path: "Unknown file",
-          };
+          return null;
         })
-        .filter((file) => file.path);
+        .filter(Boolean) as FileInfo[];
 
-      const normalizedResult: AnalysisResult = {
+      const normalized: AnalysisResult = {
         repository: {
-          owner: data?.repository?.owner ?? "",
-          name: data?.repository?.name ?? "",
-          url: data?.repository?.url ?? url,
+          owner:
+            typeof data?.repository?.owner === "string"
+              ? data.repository.owner
+              : "",
+          name:
+            typeof data?.repository?.name === "string"
+              ? data.repository.name
+              : "",
+          url:
+            typeof data?.repository?.url === "string"
+              ? data.repository.url
+              : url.trim(),
         },
-
         analysis: {
-          file_count: Number(
-            data?.analysis?.file_count ?? 0
-          ),
-
-          loc: Number(
-            data?.analysis?.loc ?? 0
-          ),
-
+          file_count:
+            typeof data?.analysis?.file_count === "number"
+              ? data.analysis.file_count
+              : files.length,
+          loc:
+            typeof data?.analysis?.loc === "number"
+              ? data.analysis.loc
+              : 0,
           languages:
             data?.analysis?.languages &&
             typeof data.analysis.languages === "object"
               ? data.analysis.languages
               : {},
-
-          files: normalizedFiles,
-
-          files_truncated: Boolean(
-            data?.analysis?.files_truncated
-          ),
+          files,
+          files_truncated:
+            Boolean(data?.analysis?.files_truncated),
         },
-
-        status: data?.status ?? "completed",
+        status:
+          typeof data?.status === "string"
+            ? data.status
+            : "completed",
       };
 
-      setResult(normalizedResult);
+      setResult(normalized);
+      setSearch("");
+      setLanguage("All");
+      setSortBy("name");
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : "Something went wrong while analyzing the repository."
+          : "Something went wrong."
       );
     } finally {
       setLoading(false);
     }
   }
 
-  function handleKeyDown(
-    event: React.KeyboardEvent<HTMLInputElement>
-  ) {
-    if (event.key === "Enter" && !loading) {
-      analyzeRepository();
-    }
-  }
+  const languages = useMemo(() => {
+    const uniqueLanguages = result.analysis.files
+      .map((file) => file.language)
+      .filter(Boolean);
 
-  const analysis = result?.analysis ?? EMPTY_ANALYSIS;
+    return ["All", ...Array.from(new Set(uniqueLanguages))];
+  }, [result.analysis.files]);
+
+  const filteredFiles = useMemo(() => {
+    const normalizedSearch = search.toLowerCase().trim();
+
+    const filtered = result.analysis.files.filter((file) => {
+      const matchesSearch =
+        !normalizedSearch ||
+        file.path.toLowerCase().includes(normalizedSearch);
+
+      const matchesLanguage =
+        language === "All" || file.language === language;
+
+      return matchesSearch && matchesLanguage;
+    });
+
+    return [...filtered].sort((a, b) => {
+      if (sortBy === "loc-desc") {
+        return b.loc - a.loc;
+      }
+
+      if (sortBy === "loc-asc") {
+        return a.loc - b.loc;
+      }
+
+      return a.path.localeCompare(b.path);
+    });
+  }, [
+    result.analysis.files,
+    search,
+    language,
+    sortBy,
+  ]);
+
+  const topLanguages = useMemo(() => {
+    return Object.entries(result.analysis.languages).sort(
+      (a, b) => b[1] - a[1]
+    );
+  }, [result.analysis.languages]);
 
   return (
-    <>
-      <style>{`
-        * {
-          box-sizing: border-box;
-        }
-
-        html {
-          scroll-behavior: smooth;
-        }
-
-        body {
-          margin: 0;
-          background: #050507;
-          color: #f5f5f7;
-          font-family:
-            Inter,
-            ui-sans-serif,
-            system-ui,
-            -apple-system,
-            BlinkMacSystemFont,
-            "Segoe UI",
-            sans-serif;
-        }
-
-        button,
-        input {
-          font: inherit;
-        }
-
-        button {
-          cursor: pointer;
-        }
-
-        .app {
-          min-height: 100vh;
-          background:
-            radial-gradient(
-              circle at 50% -10%,
-              rgba(112, 76, 255, 0.16),
-              transparent 34%
-            ),
-            #050507;
-        }
-
-        .navbar {
-          width: 100%;
-          height: 76px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 0 5vw;
-          border-bottom: 1px solid rgba(255,255,255,0.07);
-          background: rgba(5,5,7,0.72);
-          backdrop-filter: blur(16px);
-          position: sticky;
-          top: 0;
-          z-index: 20;
-        }
-
-        .logo {
-          display: flex;
-          align-items: center;
-          gap: 11px;
-          font-weight: 800;
-          font-size: 18px;
-          letter-spacing: -0.4px;
-        }
-
-        .logo-mark {
-          width: 31px;
-          height: 31px;
-          border-radius: 9px;
-          display: grid;
-          place-items: center;
-          background: linear-gradient(
-            135deg,
-            #8b5cf6,
-            #5b5bf7
-          );
-          box-shadow:
-            0 0 24px rgba(124, 92, 246, 0.28);
-          font-size: 15px;
-        }
-
-        .nav-links {
-          display: flex;
-          gap: 30px;
-          align-items: center;
-          color: #96969f;
-          font-size: 14px;
-        }
-
-        .nav-links a {
-          color: inherit;
-          text-decoration: none;
-          transition: color 0.2s;
-        }
-
-        .nav-links a:hover {
-          color: white;
-        }
-
-        .hero {
-          max-width: 1120px;
-          margin: 0 auto;
-          padding: 105px 24px 85px;
-          text-align: center;
-        }
-
-        .eyebrow {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          padding: 7px 12px;
-          border: 1px solid rgba(139,92,246,0.28);
-          border-radius: 999px;
-          color: #a78bfa;
-          background: rgba(124,92,246,0.08);
-          font-size: 12px;
-          font-weight: 700;
-          letter-spacing: 1.3px;
-          text-transform: uppercase;
-        }
-
-        .hero h1 {
-          margin: 25px auto 20px;
-          max-width: 850px;
-          font-size: clamp(45px, 7vw, 78px);
-          line-height: 0.98;
-          letter-spacing: -4px;
-          font-weight: 800;
-        }
-
-        .gradient-text {
-          background: linear-gradient(
-            110deg,
-            #ffffff 15%,
-            #a78bfa 52%,
-            #6366f1 90%
-          );
-          -webkit-background-clip: text;
-          background-clip: text;
-          color: transparent;
-        }
-
-        .hero p {
-          max-width: 650px;
-          margin: 0 auto;
-          color: #9999a3;
-          font-size: 18px;
-          line-height: 1.7;
-        }
-
-        .analyze-box {
-          max-width: 720px;
-          margin: 38px auto 0;
-          padding: 7px;
-          display: flex;
-          gap: 8px;
-          border-radius: 15px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.045);
-          box-shadow:
-            0 20px 70px rgba(0,0,0,0.3),
-            0 0 50px rgba(104,75,220,0.08);
-        }
-
-        .analyze-input {
-          flex: 1;
-          min-width: 0;
-          border: 0;
-          outline: 0;
-          padding: 15px 16px;
-          color: white;
-          background: transparent;
-          font-size: 15px;
-        }
-
-        .analyze-input::placeholder {
-          color: #666670;
-        }
-
-        .analyze-button {
-          border: 0;
-          border-radius: 10px;
-          padding: 0 24px;
-          min-height: 50px;
-          color: white;
-          background: linear-gradient(
-            135deg,
-            #7c3aed,
-            #5b5bf7
-          );
-          font-weight: 700;
-          transition:
-            transform 0.2s,
-            opacity 0.2s;
-          box-shadow:
-            0 8px 25px rgba(99,102,241,0.2);
-        }
-
-        .analyze-button:hover:not(:disabled) {
-          transform: translateY(-1px);
-        }
-
-        .analyze-button:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-        }
-
-        .error {
-          max-width: 720px;
-          margin: 14px auto 0;
-          padding: 12px 15px;
-          text-align: left;
-          border-radius: 10px;
-          border: 1px solid rgba(248,113,113,0.22);
-          background: rgba(248,113,113,0.07);
-          color: #fca5a5;
-          font-size: 14px;
-        }
-
-        .hint {
-          margin-top: 15px;
-          color: #606069;
-          font-size: 12px;
-        }
-
-        .section {
-          max-width: 1120px;
-          margin: 0 auto;
-          padding: 75px 24px;
-        }
-
-        .section-heading {
-          margin-bottom: 35px;
-        }
-
-        .section-heading .small {
-          color: #8b5cf6;
-          font-size: 11px;
-          font-weight: 800;
-          letter-spacing: 1.8px;
-          text-transform: uppercase;
-        }
-
-        .section-heading h2 {
-          margin: 10px 0 0;
-          font-size: 35px;
-          letter-spacing: -1.5px;
-        }
-
-        .features {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 16px;
-        }
-
-        .feature {
-          padding: 27px;
-          min-height: 190px;
-          border: 1px solid rgba(255,255,255,0.08);
-          border-radius: 18px;
-          background:
-            linear-gradient(
-              145deg,
-              rgba(255,255,255,0.045),
-              rgba(255,255,255,0.018)
-            );
-          transition:
-            transform 0.25s,
-            border-color 0.25s;
-        }
-
-        .feature:hover {
-          transform: translateY(-3px);
-          border-color: rgba(139,92,246,0.3);
-        }
-
-        .feature-icon {
-          width: 39px;
-          height: 39px;
-          display: grid;
-          place-items: center;
-          border-radius: 11px;
-          background: rgba(124,92,246,0.12);
-          border: 1px solid rgba(139,92,246,0.2);
-          color: #a78bfa;
-          font-size: 17px;
-          margin-bottom: 20px;
-        }
-
-        .feature h3 {
-          margin: 0 0 9px;
-          font-size: 16px;
-        }
-
-        .feature p {
-          margin: 0;
-          color: #85858f;
-          line-height: 1.6;
-          font-size: 14px;
-        }
-
-        .steps {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 15px;
-        }
-
-        .step {
-          padding: 26px;
-          border-top: 1px solid rgba(255,255,255,0.1);
-        }
-
-        .step-number {
-          color: #8b5cf6;
-          font-size: 12px;
-          font-weight: 800;
-          letter-spacing: 1px;
-        }
-
-        .step h3 {
-          margin: 12px 0 8px;
-        }
-
-        .step p {
-          margin: 0;
-          color: #81818b;
-          font-size: 14px;
-          line-height: 1.65;
-        }
-
-        .dashboard {
-          max-width: 1180px;
-          margin: 30px auto 90px;
-          padding: 0 24px;
-        }
-
-        .dashboard-header {
-          padding: 30px 0 28px;
-          border-bottom: 1px solid rgba(255,255,255,0.08);
-        }
-
-        .analysis-label {
-          color: #8b5cf6;
-          font-size: 12px;
-          font-weight: 800;
-          letter-spacing: 1.5px;
-          text-transform: uppercase;
-        }
-
-        .repo-title {
-          margin: 13px 0 8px;
-          font-size: clamp(34px, 5vw, 48px);
-          letter-spacing: -2.4px;
-          line-height: 1;
-        }
-
-        .repo-url {
-          color: #71717b;
-          font-size: 14px;
-          word-break: break-all;
-        }
-
-        .status {
-          display: inline-flex;
-          align-items: center;
-          margin-top: 18px;
-          padding: 7px 11px;
-          border-radius: 999px;
-          border: 1px solid rgba(34,197,94,0.22);
-          background: rgba(34,197,94,0.07);
-          color: #86efac;
-          font-size: 12px;
-          font-weight: 700;
-        }
-
-        .stats {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 15px;
-          margin-top: 28px;
-        }
-
-        .stat {
-          padding: 30px;
-          min-height: 130px;
-          border-radius: 17px;
-          border: 1px solid rgba(255,255,255,0.09);
-          background: rgba(255,255,255,0.025);
-        }
-
-        .stat-value {
-          font-size: 37px;
-          font-weight: 750;
-          letter-spacing: -1.5px;
-        }
-
-        .stat-label {
-          margin-top: 8px;
-          color: #73737d;
-          font-size: 13px;
-        }
-
-        .dashboard-grid {
-          display: grid;
-          grid-template-columns: 1fr 1.35fr;
-          gap: 16px;
-          margin-top: 16px;
-        }
-
-        .panel {
-          min-width: 0;
-          border-radius: 17px;
-          border: 1px solid rgba(255,255,255,0.09);
-          background: rgba(255,255,255,0.025);
-          overflow: hidden;
-        }
-
-        .panel-header {
-          padding: 21px 24px;
-          border-bottom: 1px solid rgba(255,255,255,0.07);
-        }
-
-        .panel-header h3 {
-          margin: 0;
-          font-size: 15px;
-        }
-
-        .panel-body {
-          padding: 24px;
-        }
-
-        .language-row {
-          margin-bottom: 18px;
-        }
-
-        .language-top {
-          display: flex;
-          justify-content: space-between;
-          gap: 10px;
-          margin-bottom: 7px;
-          font-size: 13px;
-        }
-
-        .language-name {
-          color: #dddde2;
-        }
-
-        .language-count {
-          color: #777782;
-        }
-
-        .language-bar {
-          height: 5px;
-          border-radius: 99px;
-          overflow: hidden;
-          background: rgba(255,255,255,0.07);
-        }
-
-        .language-fill {
-          height: 100%;
-          border-radius: inherit;
-          background: linear-gradient(
-            90deg,
-            #7c3aed,
-            #6366f1
-          );
-        }
-
-        .empty {
-          padding: 25px 0;
-          color: #666671;
-          font-size: 14px;
-          line-height: 1.6;
-        }
-
-        .file-list {
-          max-height: 430px;
-          overflow-y: auto;
-        }
-
-        .file-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 20px;
-          padding: 13px 0;
-          border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-
-        .file-row:last-child {
-          border-bottom: 0;
-        }
-
-        .file-path {
-          min-width: 0;
-          color: #d4d4d9;
-          font-family:
-            "SFMono-Regular",
-            Consolas,
-            "Liberation Mono",
-            monospace;
-          font-size: 12px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-
-        .file-meta {
-          flex-shrink: 0;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          color: #666671;
-          font-size: 11px;
-        }
-
-        .file-language {
-          padding: 4px 7px;
-          border-radius: 5px;
-          background: rgba(124,92,246,0.08);
-          color: #9b8af8;
-        }
-
-        .truncated {
-          margin-top: 12px;
-          color: #696974;
-          font-size: 11px;
-        }
-
-        .footer {
-          padding: 55px 24px;
-          text-align: center;
-          color: #4f4f58;
-          border-top: 1px solid rgba(255,255,255,0.06);
-          font-size: 12px;
-        }
-
-        @media (max-width: 850px) {
-          .features,
-          .steps {
-            grid-template-columns: 1fr;
-          }
-
-          .dashboard-grid {
-            grid-template-columns: 1fr;
-          }
-
-          .stats {
-            grid-template-columns: 1fr;
-          }
-
-          .nav-links {
-            display: none;
-          }
-
-          .hero {
-            padding-top: 75px;
-          }
-        }
-
-        @media (max-width: 600px) {
-          .navbar {
-            padding: 0 20px;
-          }
-
-          .hero {
-            padding-left: 18px;
-            padding-right: 18px;
-          }
-
-          .hero h1 {
-            letter-spacing: -2.5px;
-          }
-
-          .hero p {
-            font-size: 15px;
-          }
-
-          .analyze-box {
-            flex-direction: column;
-            padding: 8px;
-          }
-
-          .analyze-button {
-            min-height: 48px;
-          }
-
-          .section,
-          .dashboard {
-            padding-left: 18px;
-            padding-right: 18px;
-          }
-
-          .file-row {
-            align-items: flex-start;
-            flex-direction: column;
-            gap: 7px;
-          }
-        }
-      `}</style>
-
-      <div className="app">
-
-        {/* NAVBAR */}
-        <nav className="navbar">
-          <div className="logo">
-            <div className="logo-mark">⌘</div>
-            <span>CodeAtlas AI</span>
-          </div>
-
-          <div className="nav-links">
-            <a href="#features">Features</a>
-            <a href="#how-it-works">How it works</a>
-            <a href="#analyze">Analyze</a>
-          </div>
-        </nav>
-
-        {/* HERO */}
-        <section className="hero" id="analyze">
-          <div className="eyebrow">
-            ✦ AI-powered code intelligence
-          </div>
-
-          <h1>
-            Map your code.
-            <br />
-            <span className="gradient-text">
-              Understand what changes.
-            </span>
-          </h1>
-
-          <p>
-            CodeAtlas AI turns a GitHub repository into an
-            intelligent map of your codebase — helping you
-            understand structure, dependencies, risks, and
-            change impact.
-          </p>
-
-          <div className="analyze-box">
-            <input
-              className="analyze-input"
-              type="text"
-              value={repoUrl}
-              onChange={(event) =>
-                setRepoUrl(event.target.value)
-              }
-              onKeyDown={handleKeyDown}
-              placeholder="https://github.com/owner/repository"
-              disabled={loading}
-            />
-
-            <button
-              className="analyze-button"
-              onClick={analyzeRepository}
-              disabled={loading}
-            >
-              {loading ? "Analyzing..." : "Analyze repo →"}
-            </button>
-          </div>
-
-          {error && (
-            <div className="error">
-              {error}
+    <div className="app-shell">
+      <header className="navbar">
+        <div className="brand">
+          <div className="brand-mark">C</div>
+          <div>
+            <div className="brand-name">CodeAtlas AI</div>
+            <div className="brand-tagline">
+              Map. Understand. Predict.
             </div>
-          )}
-
-          <div className="hint">
-            Public GitHub repositories supported in V1
           </div>
-        </section>
+        </div>
 
-        {/* FEATURES */}
-        <section className="section" id="features">
-          <div className="section-heading">
-            <div className="small">What CodeAtlas does</div>
-            <h2>Understand software, not just files.</h2>
-          </div>
+        <div className="nav-pill">
+          <span className="status-dot" />
+          Public repositories
+        </div>
+      </header>
 
-          <div className="features">
-            <FeatureCard
-              icon="⌘"
-              title="Code Intelligence"
-              description="Analyze source code structure, languages, files, and relationships across the repository."
-            />
+      <main>
+        {!result.repository.name ? (
+          <>
+            <section className="hero">
+              <div className="hero-badge">
+                <span>✦</span>
+                AI-powered software intelligence
+              </div>
 
-            <FeatureCard
-              icon="◈"
-              title="Dependency Mapping"
-              description="Build a connected view of how modules and components depend on each other."
-            />
+              <h1>
+                Understand any
+                <br />
+                <span>codebase.</span>
+              </h1>
 
-            <FeatureCard
-              icon="◉"
-              title="Change Impact"
-              description="Understand which parts of a codebase could be affected before making a change."
-            />
+              <p className="hero-description">
+                Analyze a GitHub repository and turn its source code
+                into an intelligent map of structure, complexity,
+                dependencies, and risk.
+              </p>
 
-            <FeatureCard
-              icon="⚡"
-              title="PR Risk Prediction"
-              description="Predict potentially risky changes using repository and historical engineering signals."
-            />
+              <form
+                className="analyze-box"
+                onSubmit={analyzeRepository}
+              >
+                <div className="input-wrapper">
+                  <span className="input-icon">↗</span>
 
-            <FeatureCard
-              icon="✦"
-              title="AI Code Assistant"
-              description="Ask questions about the repository and get context-aware explanations."
-            />
+                  <input
+                    value={url}
+                    onChange={(event) =>
+                      setUrl(event.target.value)
+                    }
+                    placeholder="https://github.com/owner/repository"
+                  />
+                </div>
 
-            <FeatureCard
-              icon="△"
-              title="Hotspot Detection"
-              description="Identify complex and frequently changing areas that deserve extra attention."
-            />
-          </div>
-        </section>
+                <button
+                  className="analyze-button"
+                  type="submit"
+                  disabled={loading}
+                >
+                  {loading ? "Analyzing..." : "Analyze repository"}
+                  <span>→</span>
+                </button>
+              </form>
 
-        {/* HOW IT WORKS */}
-        <section className="section" id="how-it-works">
-          <div className="section-heading">
-            <div className="small">Under the hood</div>
-            <h2>From repository to intelligence.</h2>
-          </div>
+              {error && (
+                <div className="error-message">
+                  {error}
+                </div>
+              )}
 
-          <div className="steps">
-            <Step
-              number="01"
-              title="Ingest"
-              description="CodeAtlas connects to a public GitHub repository and collects its source structure and metadata."
-            />
+              <div className="hero-note">
+                Currently supports public GitHub repositories
+              </div>
+            </section>
 
-            <Step
-              number="02"
-              title="Understand"
-              description="Source code is parsed and transformed into structured information about files, symbols, dependencies, and changes."
-            />
+            <section className="features-section">
+              <div className="section-label">WHAT CODEATLAS DOES</div>
 
-            <Step
-              number="03"
-              title="Predict"
-              description="AI and machine-learning models use that context to surface risks, explain changes, and answer engineering questions."
-            />
-          </div>
-        </section>
+              <div className="feature-grid">
+                <FeatureCard
+                  number="01"
+                  title="Map"
+                  description="Build a structured view of your repository, files, languages, and dependencies."
+                />
 
-        {/* DASHBOARD */}
-        {result && (
+                <FeatureCard
+                  number="02"
+                  title="Understand"
+                  description="Explore code structure and surface the important parts of a large codebase."
+                />
+
+                <FeatureCard
+                  number="03"
+                  title="Predict"
+                  description="Use repository signals and machine learning to identify potentially risky changes."
+                />
+              </div>
+            </section>
+
+            <section className="steps-section">
+              <div className="section-label">HOW IT WORKS</div>
+
+              <div className="steps-grid">
+                <Step
+                  number="01"
+                  title="Connect"
+                  description="Provide a public GitHub repository."
+                />
+
+                <Step
+                  number="02"
+                  title="Analyze"
+                  description="CodeAtlas scans the repository and extracts engineering signals."
+                />
+
+                <Step
+                  number="03"
+                  title="Explore"
+                  description="Navigate the codebase through an interactive intelligence dashboard."
+                />
+              </div>
+            </section>
+          </>
+        ) : (
           <section className="dashboard">
-
             <div className="dashboard-header">
-              <div className="analysis-label">
-                Analysis complete
+              <div>
+                <div className="section-label">REPOSITORY ANALYSIS</div>
+
+                <h1>{result.repository.name}</h1>
+
+                <p>
+                  {result.repository.owner} · Public GitHub repository
+                </p>
               </div>
 
-              <h2 className="repo-title">
-                {result.repository.name || "Repository"}
-              </h2>
-
-              <div className="repo-url">
-                {result.repository.url}
-              </div>
-
-              <div className="status">
-                ✓ {result.status || "completed"}
-              </div>
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  setResult(EMPTY_ANALYSIS);
+                  setSelectedFile(null);
+                  setUrl("");
+                }}
+              >
+                Analyze another
+              </button>
             </div>
 
-            {/* STATS */}
-            <div className="stats">
+            <div className="stats-grid">
               <Stat
-                value={formatNumber(analysis.file_count)}
-                label="Files analyzed"
+                label="Files"
+                value={formatNumber(result.analysis.file_count)}
               />
 
               <Stat
-                value={formatNumber(analysis.loc)}
                 label="Lines of code"
+                value={formatNumber(result.analysis.loc)}
               />
 
               <Stat
+                label="Languages"
                 value={formatNumber(
-                  Object.keys(
-                    analysis.languages ?? {}
-                  ).length
+                  Object.keys(result.analysis.languages).length
                 )}
-                label="Languages detected"
+              />
+
+              <Stat
+                label="Status"
+                value="Ready"
               />
             </div>
 
-            {/* LOWER PANELS */}
             <div className="dashboard-grid">
-
-              {/* LANGUAGES */}
-              <div className="panel">
+              <div className="main-panel">
                 <div className="panel-header">
-                  <h3>Languages</h3>
-                </div>
-
-                <div className="panel-body">
-                  {Object.keys(
-                    analysis.languages ?? {}
-                  ).length === 0 ? (
-                    <div className="empty">
-                      No language information was
-                      returned by the analyzer.
+                  <div>
+                    <div className="panel-title">
+                      Code Explorer
                     </div>
-                  ) : (
-                    Object.entries(
-                      analysis.languages ?? {}
-                    )
-                      .sort(
-                        ([, a], [, b]) =>
-                          Number(b) - Number(a)
-                      )
-                      .map(
-                        ([language, count]) => {
-                          const total =
-                            Math.max(
-                              analysis.file_count,
-                              1
-                            );
 
-                          const percentage =
-                            Math.min(
-                              100,
-                              (Number(count) /
-                                total) *
-                                100
-                            );
+                    <div className="panel-subtitle">
+                      Explore files detected in the repository
+                    </div>
+                  </div>
 
-                          return (
-                            <div
-                              className="language-row"
-                              key={language}
-                            >
-                              <div className="language-top">
-                                <span className="language-name">
-                                  {language}
-                                </span>
-
-                                <span className="language-count">
-                                  {formatNumber(
-                                    Number(count)
-                                  )}
-                                </span>
-                              </div>
-
-                              <div className="language-bar">
-                                <div
-                                  className="language-fill"
-                                  style={{
-                                    width: `${percentage}%`,
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          );
-                        }
-                      )
-                  )}
+                  <div className="file-count">
+                    {filteredFiles.length} files
+                  </div>
                 </div>
+
+                <div className="explorer-controls">
+                  <div className="search-box">
+                    <span>⌕</span>
+
+                    <input
+                      value={search}
+                      onChange={(event) =>
+                        setSearch(event.target.value)
+                      }
+                      placeholder="Search files..."
+                    />
+                  </div>
+
+                  <select
+                    value={language}
+                    onChange={(event) =>
+                      setLanguage(event.target.value)
+                    }
+                  >
+                    {languages.map((item) => (
+                      <option key={item} value={item}>
+                        {item === "All"
+                          ? "All languages"
+                          : item}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={sortBy}
+                    onChange={(event) =>
+                      setSortBy(event.target.value)
+                    }
+                  >
+                    <option value="name">Name</option>
+                    <option value="loc-desc">
+                      LOC: High → Low
+                    </option>
+                    <option value="loc-asc">
+                      LOC: Low → High
+                    </option>
+                  </select>
+                </div>
+
+                {filteredFiles.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-icon">⌕</div>
+
+                    <h3>No files found</h3>
+
+                    <p>
+                      Try changing your search or language filter.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="file-list">
+                    {filteredFiles.map((file) => (
+                      <button
+                        key={file.path}
+                        className={`file-row ${
+                          selectedFile?.path === file.path
+                            ? "selected"
+                            : ""
+                        }`}
+                        onClick={() =>
+                          setSelectedFile(file)
+                        }
+                      >
+                        <div className="file-symbol">
+                          {getFileSymbol(file.language)}
+                        </div>
+
+                        <div className="file-info">
+                          <div className="file-path">
+                            {file.path}
+                          </div>
+
+                          <div className="file-meta">
+                            {file.language}
+                          </div>
+                        </div>
+
+                        <div className="file-loc">
+                          {formatNumber(file.loc)} LOC
+                        </div>
+
+                        <div className="file-arrow">
+                          →
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {/* FILES */}
-              <div className="panel">
-                <div className="panel-header">
-                  <h3>Repository files</h3>
-                </div>
+              <aside className="side-column">
+                <div className="side-panel">
+                  <div className="panel-title">
+                    File details
+                  </div>
 
-                <div className="panel-body">
-                  {analysis.files.length === 0 ? (
-                    <div className="empty">
-                      No files were detected by the
-                      analyzer.
-                    </div>
-                  ) : (
-                    <>
-                      <div className="file-list">
-                        {analysis.files.map(
-                          (file, index) => (
-                            <div
-                              className="file-row"
-                              key={`${file.path}-${index}`}
-                            >
-                              <div
-                                className="file-path"
-                                title={file.path}
-                              >
-                                {file.path}
-                              </div>
-
-                              <div className="file-meta">
-                                {file.language && (
-                                  <span className="file-language">
-                                    {file.language}
-                                  </span>
-                                )}
-
-                                {typeof file.loc ===
-                                  "number" && (
-                                  <span>
-                                    {formatNumber(
-                                      file.loc
-                                    )}{" "}
-                                    LOC
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          )
-                        )}
+                  {selectedFile ? (
+                    <div className="file-detail">
+                      <div className="detail-symbol">
+                        {getFileSymbol(selectedFile.language)}
                       </div>
 
-                      {analysis.files_truncated && (
-                        <div className="truncated">
-                          Showing the first 500 files.
-                        </div>
-                      )}
-                    </>
+                      <h3>{selectedFile.path}</h3>
+
+                      <div className="detail-row">
+                        <span>Language</span>
+                        <strong>
+                          {selectedFile.language}
+                        </strong>
+                      </div>
+
+                      <div className="detail-row">
+                        <span>Lines of code</span>
+                        <strong>
+                          {formatNumber(selectedFile.loc)}
+                        </strong>
+                      </div>
+
+                      <div className="detail-row">
+                        <span>Risk score</span>
+                        <strong className="muted-value">
+                          Coming soon
+                        </strong>
+                      </div>
+
+                      <div className="detail-row">
+                        <span>Dependencies</span>
+                        <strong className="muted-value">
+                          Coming soon
+                        </strong>
+                      </div>
+
+                      <div className="detail-row">
+                        <span>AI explanation</span>
+                        <strong className="muted-value">
+                          Coming soon
+                        </strong>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="selection-empty">
+                      <div className="selection-icon">
+                        ⌁
+                      </div>
+
+                      <p>
+                        Select a file to inspect its details.
+                      </p>
+                    </div>
                   )}
                 </div>
-              </div>
 
+                <div className="side-panel">
+                  <div className="panel-title">
+                    Languages
+                  </div>
+
+                  <div className="language-list">
+                    {topLanguages.map(
+                      ([name, count]) => (
+                        <div
+                          className="language-row"
+                          key={name}
+                        >
+                          <div>
+                            <span className="language-dot" />
+                            {name}
+                          </div>
+
+                          <strong>
+                            {count}
+                          </strong>
+                        </div>
+                      )
+                    )}
+                  </div>
+                </div>
+              </aside>
             </div>
+
+            {result.analysis.files_truncated && (
+              <div className="notice">
+                The repository contains more files than the current
+                explorer limit. Some files are not displayed.
+              </div>
+            )}
           </section>
         )}
+      </main>
 
-        {/* FOOTER */}
-        <footer className="footer">
-          CodeAtlas AI · Map. Understand. Predict.
-        </footer>
-
-      </div>
-    </>
-  );
-}
-
-
-/* ---------------- COMPONENTS ---------------- */
-
-function FeatureCard({
-  icon,
-  title,
-  description,
-}: {
-  icon: string;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="feature">
-      <div className="feature-icon">
-        {icon}
-      </div>
-
-      <h3>{title}</h3>
-
-      <p>{description}</p>
+      <footer className="footer">
+        <div>CodeAtlas AI</div>
+        <div>Map. Understand. Predict.</div>
+      </footer>
     </div>
   );
 }
 
+function getFileSymbol(language: string) {
+  const symbols: Record<string, string> = {
+    Python: "PY",
+    JavaScript: "JS",
+    TypeScript: "TS",
+    Java: "JV",
+    Go: "GO",
+    Rust: "RS",
+    "C++": "C+",
+    "C#": "C#",
+    Ruby: "RB",
+    PHP: "PHP",
+    Kotlin: "KT",
+    Swift: "SW",
+  };
+
+  return symbols[language] || "FILE";
+}
+
+function FeatureCard({
+  number,
+  title,
+  description,
+}: {
+  number: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="feature-card">
+      <div className="feature-number">{number}</div>
+
+      <div className="feature-title">{title}</div>
+
+      <p>{description}</p>
+
+      <div className="feature-line" />
+    </div>
+  );
+}
 
 function Step({
   number,
@@ -1158,45 +685,31 @@ function Step({
 }) {
   return (
     <div className="step">
-      <div className="step-number">
-        {number}
+      <div className="step-number">{number}</div>
+
+      <div>
+        <h3>{title}</h3>
+        <p>{description}</p>
       </div>
-
-      <h3>{title}</h3>
-
-      <p>{description}</p>
     </div>
   );
 }
-
 
 function Stat({
-  value,
   label,
+  value,
 }: {
-  value: string;
   label: string;
+  value: string;
 }) {
   return (
-    <div className="stat">
-      <div className="stat-value">
-        {value}
-      </div>
-
-      <div className="stat-label">
-        {label}
-      </div>
+    <div className="stat-card">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{value}</div>
     </div>
   );
 }
 
-
-/* ---------------- MOUNT APP ---------------- */
-
-createRoot(
-  document.getElementById("root")!
-).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
+createRoot(document.getElementById("root")!).render(
+  <App />
 );
