@@ -1,5 +1,6 @@
 from pathlib import Path
 import tempfile
+import shutil
 
 from git import Repo
 
@@ -91,19 +92,35 @@ def scan_repository(repo_path: str) -> dict:
         "total_loc": total_loc,
         "languages": language_counts,
         "dependencies": dependencies,
-     }
+    }
 
 
 def analyze_public_repository(url: str) -> dict:
     owner, repo = validate_github_url(url)
 
-    with tempfile.TemporaryDirectory() as temp_dir:
+    temp_dir = tempfile.mkdtemp()
+
+    try:
+        # Clone repository
         clone_repository(url, temp_dir)
+
+        # Analyze source code
         analysis = scan_repository(temp_dir)
 
-    return {
-        "repository": f"{owner}/{repo}",
-        "url": url,
-        "analysis": analysis,
-        "status": "completed",
-    }
+        # Git history temporarily disabled.
+        # We will implement an optimized version separately.
+        analysis["git_history"] = {}
+
+        return {
+            "repository": f"{owner}/{repo}",
+            "url": url,
+            "analysis": analysis,
+            "status": "completed",
+        }
+
+    finally:
+        # Clean up temporary repository
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
