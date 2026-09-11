@@ -4,6 +4,7 @@ import tempfile
 from git import Repo
 
 from app.analyzer.parser import parse_python_file
+from app.analyzer.dependency import extract_python_dependencies
 
 
 def validate_github_url(url: str) -> tuple[str, str]:
@@ -82,12 +83,15 @@ def scan_repository(repo_path: str) -> dict:
         total_loc += loc
         language_counts[language] = language_counts.get(language, 0) + 1
 
+    dependencies = extract_python_dependencies(files)
+
     return {
         "files": files,
         "total_files": len(files),
         "total_loc": total_loc,
         "languages": language_counts,
-    }
+        "dependencies": dependencies,
+     }
 
 
 def analyze_public_repository(url: str) -> dict:
