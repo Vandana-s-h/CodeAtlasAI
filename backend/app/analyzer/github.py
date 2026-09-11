@@ -1,82 +1,105 @@
 from pathlib import Path
-import re
-import shutil
 import tempfile
-from urllib.parse import urlparse
-from git import Repo, GitCommandError
 
-ALLOWED_HOSTS = {"github.com", "www.github.com"}
-IGNORED_DIRS = {".git", "node_modules", "dist", "build", "__pycache__", ".venv", "venv"}
-TEXT_EXTENSIONS = {
-    ".py": "Python", ".js": "JavaScript", ".jsx": "JavaScript", ".ts": "TypeScript",
-    ".tsx": "TypeScript", ".java": "Java", ".cpp": "C++", ".cc": "C++", ".c": "C",
-    ".h": "C/C++", ".hpp": "C++", ".go": "Go", ".rs": "Rust", ".rb": "Ruby",
-    ".php": "PHP", ".cs": "C#", ".kt": "Kotlin", ".swift": "Swift",
-}
+from git import Repo
+
+from app.analyzer.parser import parse_python_file
 
 
-def parse_github_url(url: str) -> tuple[str, str]:
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.netloc.lower() not in ALLOWED_HOSTS:
-        raise ValueError("Only https://github.com/<owner>/<repository> URLs are supported in V1.")
-    parts = [p for p in parsed.path.split("/") if p]
-    if len(parts) < 2:
-        raise ValueError("Enter a valid GitHub repository URL.")
-    owner = parts[0]
-    repo = re.sub(r"\.git$", "", parts[1])
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repo):
+def validate_github_url(url: str) -> tuple[str, str]:
+    parts = url.rstrip("/").split("/")
+
+    if len(parts) < 5 or parts[2] != "github.com":
+        raise ValueError("Only public GitHub repository URLs are supported.")
+
+    owner = parts[3]
+    repo = parts[4].replace(".git", "")
+
+    if not owner or not repo:
         raise ValueError("Invalid GitHub repository URL.")
+
     return owner, repo
 
 
-def scan_repository(root: Path) -> dict:
+def clone_repository(url: str, destination: str) -> None:
+    Repo.clone_from(url, destination, depth=1)
+
+
+def scan_repository(repo_path: str) -> dict:
     files = []
-    language_counts: dict[str, int] = {}
     total_loc = 0
+    language_counts = {}
+
+    root = Path(repo_path)
 
     for path in root.rglob("*"):
-        if not path.is_file() or any(part in IGNORED_DIRS for part in path.parts):
+        if not path.is_file():
             continue
-        rel = path.relative_to(root).as_posix()
-        suffix = path.suffix.lower()
-        language = TEXT_EXTENSIONS.get(suffix)
-        if not language:
+
+        if ".git" in path.parts:
             continue
+
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
             continue
-        loc = sum(1 for line in text.splitlines() if line.strip())
+
+        lines = text.splitlines()
+        loc = len(lines)
+
+        suffix = path.suffix.lower()
+
+        language = {
+            ".py": "Python",
+            ".js": "JavaScript",
+            ".ts": "TypeScript",
+            ".tsx": "TypeScript",
+            ".jsx": "JavaScript",
+            ".java": "Java",
+            ".cpp": "C++",
+            ".c": "C",
+            ".go": "Go",
+            ".rs": "Rust",
+        }.get(suffix, "Other")
+
+        file_info = {
+            "path": str(path.relative_to(root)),
+            "language": language,
+            "loc": loc,
+        }
+
+        # Tree-sitter analysis for Python files
+        if suffix == ".py":
+            parsed = parse_python_file(str(path))
+
+            file_info["classes"] = parsed["classes"]
+            file_info["functions"] = parsed["functions"]
+            file_info["imports"] = parsed["imports"]
+            file_info["has_syntax_errors"] = parsed["has_errors"]
+
+        files.append(file_info)
+
         total_loc += loc
         language_counts[language] = language_counts.get(language, 0) + 1
-        files.append({"path": rel, "language": language, "loc": loc})
 
-    files.sort(key=lambda item: item["path"])
     return {
-        "file_count": len(files),
-        "loc": total_loc,
+        "files": files,
+        "total_files": len(files),
+        "total_loc": total_loc,
         "languages": language_counts,
-        "files": files[:500],
-        "files_truncated": len(files) > 500,
     }
 
 
 def analyze_public_repository(url: str) -> dict:
-    owner, repo_name = parse_github_url(url)
-    temp_dir = Path(tempfile.mkdtemp(prefix="codeatlas-"))
-    target = temp_dir / "repo"
-    try:
-        Repo.clone_from(f"https://github.com/{owner}/{repo_name}.git", target, depth=1)
-    except GitCommandError as exc:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError("Could not clone the repository. V1 supports public GitHub repositories only.") from exc
+    owner, repo = validate_github_url(url)
 
-    try:
-        scan = scan_repository(target)
-        return {
-            "repository": {"owner": owner, "name": repo_name, "url": f"https://github.com/{owner}/{repo_name}"},
-            "analysis": scan,
-            "status": "completed",
-        }
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clone_repository(url, temp_dir)
+        analysis = scan_repository(temp_dir)
+
+    return {
+        "repository": f"{owner}/{repo}",
+        "url": url,
+        "analysis": analysis,
+        "status": "completed",
+    }
