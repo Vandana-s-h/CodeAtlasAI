@@ -4,8 +4,9 @@ import shutil
 
 from git import Repo
 
-from app.analyzer.parser import parse_python_file
-from app.analyzer.dependency import extract_python_dependencies
+from backend.app.analyzer.parser import parse_python_file
+from backend.app.analyzer.dependency import extract_python_dependencies
+from backend.app.graph.graph_writer import GraphWriter
 
 
 def validate_github_url(url: str) -> tuple[str, str]:
@@ -94,6 +95,25 @@ def scan_repository(repo_path: str) -> dict:
         "dependencies": dependencies,
     }
 
+def write_analysis_to_graph(repository: str, url: str, analysis: dict) -> None:
+    writer = GraphWriter()
+
+    writer.create_repository(repository, url)
+
+    for file in analysis["files"]:
+        writer.create_file(
+            repository=repository,
+            file_path=file["path"],
+            language=file["language"],
+            loc=file["loc"],
+        )
+
+    for dependency in analysis["dependencies"]:
+        writer.create_dependency(
+            repository=repository,
+            source=dependency["source"],
+            target=dependency["target"],
+        )
 
 def analyze_public_repository(url: str) -> dict:
     owner, repo = validate_github_url(url)
