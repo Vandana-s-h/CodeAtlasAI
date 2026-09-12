@@ -161,3 +161,51 @@ class GraphWriter:
                 "function_name": function_name,
             },
         )    
+
+def write_analysis_to_graph(analysis: dict) -> dict:
+    writer = GraphWriter()
+
+    repository = analysis["repository"]
+    url = analysis["url"]
+
+    data = analysis.get("analysis", analysis)
+
+    writer.create_repository(repository, url)
+
+    for file_data in data.get("files", []):
+        file_path = file_data["path"]
+        language = file_data.get("language", "unknown")
+        loc = file_data.get("loc", 0)
+
+        writer.create_file(
+            repository=repository,
+            file_path=file_path,
+            language=language,
+            loc=loc,
+        )
+
+        for class_name in file_data.get("classes", []):
+            writer.create_class(
+                repository=repository,
+                file_path=file_path,
+                class_name=class_name,
+            )
+
+        for function_name in file_data.get("functions", []):
+            writer.create_function(
+                repository=repository,
+                file_path=file_path,
+                function_name=function_name,
+            )
+
+    for dependency in data.get("dependencies", []):
+        writer.create_dependency(
+            repository=repository,
+            source=dependency["source"],
+            target=dependency["target"],
+        )
+
+    return {
+        "repository": repository,
+        "status": "graph_written",
+    }
