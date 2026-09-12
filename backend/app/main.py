@@ -1,19 +1,34 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.api.repositories import router as repositories_router
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, HttpUrl
 
-app = FastAPI(title="CodeAtlas AI API", version="0.1.0")
+from backend.app.analyzer.github import analyze_public_repository
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+
+app = FastAPI(
+    title="CodeAtlas AI API",
+    version="0.1.0",
 )
 
-app.include_router(repositories_router, prefix="/api")
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "service": "codeatlas-api"}
+class RepositoryRequest(BaseModel):
+    url: HttpUrl
+
+
+@app.get("/")
+def root():
+    return {
+        "message": "CodeAtlas AI API is running",
+        "status": "healthy",
+    }
+
+
+@app.post("/api/repositories/analyze")
+def analyze_repository(request: RepositoryRequest):
+    try:
+        result = analyze_public_repository(str(request.url))
+        return result
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
