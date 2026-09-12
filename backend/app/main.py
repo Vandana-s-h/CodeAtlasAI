@@ -21,6 +21,13 @@ def root():
         "status": "healthy",
     }
 
+@app.get("/api/health")
+def health_check():
+    return {
+        "service": "CodeAtlas AI",
+        "analyzer": "available",
+        "status": "healthy",
+    }
 
 @app.post("/api/repositories/analyze")
 def analyze_repository(request: RepositoryRequest):
