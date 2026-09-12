@@ -7,6 +7,11 @@ from backend.app.api.repositories import router as repositories_router
 
 from backend.app.analyzer.github import analyze_public_repository
 
+from backend.app.api.analysis import router as analysis_router
+from backend.app.api.graph import router as graph_router
+from backend.app.api.risk import router as risk_router
+from backend.app.api.ai import router as ai_router
+
 
 app = FastAPI(
     title="CodeAtlas AI API",
@@ -25,6 +30,10 @@ app.add_middleware(
 )
 
 app.include_router(repositories_router)
+app.include_router(analysis_router)
+app.include_router(graph_router)
+app.include_router(risk_router)
+app.include_router(ai_router)
 
 class RepositoryRequest(BaseModel):
     url: HttpUrl
@@ -50,3 +59,12 @@ def health_check():
         "status": "healthy",
     }
 
+@app.get("/debug-routes")
+def debug_routes():
+    return [
+        {
+            "path": route.path,
+            "methods": list(route.methods or []),
+        }
+        for route in app.routes
+    ]
