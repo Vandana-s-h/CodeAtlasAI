@@ -1,17 +1,25 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, HttpUrl
-from app.analyzer.github import analyze_public_repository
 
-router = APIRouter(prefix="/repositories", tags=["repositories"])
+from backend.app.analyzer.github import analyze_public_repository
 
-class AnalyzeRequest(BaseModel):
+
+router = APIRouter(
+    prefix="/api/repositories",
+    tags=["Repositories"],
+)
+
+
+class RepositoryRequest(BaseModel):
     url: HttpUrl
 
+
 @router.post("/analyze")
-def analyze(request: AnalyzeRequest):
+def analyze_repository(request: RepositoryRequest):
     try:
         return analyze_public_repository(str(request.url))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )

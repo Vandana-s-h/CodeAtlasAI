@@ -3,6 +3,7 @@ from pydantic import BaseModel, HttpUrl
 from typing import Any
 from pydantic import BaseModel, HttpUrl
 from fastapi.middleware.cors import CORSMiddleware
+from backend.app.api.repositories import router as repositories_router
 
 from backend.app.analyzer.github import analyze_public_repository
 
@@ -22,6 +23,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(repositories_router)
 
 class RepositoryRequest(BaseModel):
     url: HttpUrl
@@ -47,16 +50,3 @@ def health_check():
         "status": "healthy",
     }
 
-@app.post(
-    "/api/repositories/analyze",
-    response_model=RepositoryAnalysisResponse,
-)
-def analyze_repository(request: RepositoryRequest):
-    try:
-        result = analyze_public_repository(str(request.url))
-        return result
-    except Exception as error:
-        raise HTTPException(
-            status_code=500,
-            detail=str(error),
-        )
