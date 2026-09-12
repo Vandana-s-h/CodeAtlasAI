@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl
+from typing import Any
+from pydantic import BaseModel, HttpUrl
 
 from backend.app.analyzer.github import analyze_public_repository
 
@@ -13,6 +15,11 @@ app = FastAPI(
 class RepositoryRequest(BaseModel):
     url: HttpUrl
 
+class RepositoryAnalysisResponse(BaseModel):
+    repository: str
+    url: str
+    analysis: dict[str, Any]
+    status: str
 
 @app.get("/")
 def root():
@@ -29,7 +36,10 @@ def health_check():
         "status": "healthy",
     }
 
-@app.post("/api/repositories/analyze")
+@app.post(
+    "/api/repositories/analyze",
+    response_model=RepositoryAnalysisResponse,
+)
 def analyze_repository(request: RepositoryRequest):
     try:
         result = analyze_public_repository(str(request.url))
