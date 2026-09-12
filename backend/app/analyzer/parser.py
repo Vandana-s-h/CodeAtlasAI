@@ -18,6 +18,7 @@ def parse_python_file(file_path: str) -> dict:
     classes = []
     functions = []
     imports = []
+    calls = []
 
     def walk(node):
         if node.type == "class_definition":
@@ -36,6 +37,12 @@ def parse_python_file(file_path: str) -> dict:
         elif node.type == "import_from_statement":
             imports.append(node.text.decode("utf-8"))
 
+        elif node.type == "call":
+            function_node = node.child_by_field_name("function")
+
+            if function_node:
+                calls.append(function_node.text.decode("utf-8"))    
+
         for child in node.children:
             walk(child)
 
@@ -46,5 +53,6 @@ def parse_python_file(file_path: str) -> dict:
         "classes": classes,
         "functions": functions,
         "imports": imports,
+        "calls": calls,
         "has_errors": root.has_error,
     }
