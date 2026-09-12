@@ -108,6 +108,20 @@ def write_analysis_to_graph(repository: str, url: str, analysis: dict) -> None:
             loc=file["loc"],
         )
 
+        for class_name in file.get("classes", []):
+            writer.create_class(
+                repository=repository,
+                file_path=file["path"],
+                class_name=class_name,
+            )
+
+        for function_name in file.get("functions", []):
+            writer.create_function(
+                repository=repository,
+                file_path=file["path"],
+                function_name=function_name,
+            )    
+
     for dependency in analysis["dependencies"]:
         writer.create_dependency(
             repository=repository,

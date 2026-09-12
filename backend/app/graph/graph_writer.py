@@ -73,3 +73,61 @@ class GraphWriter:
                 "target": target,
             },
         )
+
+    def create_class(
+        self,
+        repository: str,
+        file_path: str,
+        class_name: str,
+    ) -> dict:
+        query = """
+        MATCH (f:File {
+            path: $file_path,
+            repository: $repository
+        })
+        MERGE (c:Class {
+            name: $class_name,
+            file_path: $file_path,
+            repository: $repository
+        })
+        MERGE (f)-[:CONTAINS]->(c)
+        RETURN c
+        """
+
+        return self.client.run_query(
+            query,
+            {
+                "repository": repository,
+                "file_path": file_path,
+                "class_name": class_name,
+            },
+        )
+
+    def create_function(
+        self,
+        repository: str,
+        file_path: str,
+        function_name: str,
+    ) -> dict:
+        query = """
+        MATCH (f:File {
+            path: $file_path,
+            repository: $repository
+        })
+        MERGE (fn:Function {
+            name: $function_name,
+            file_path: $file_path,
+            repository: $repository
+        })
+        MERGE (f)-[:CONTAINS]->(fn)
+        RETURN fn
+        """
+
+        return self.client.run_query(
+            query,
+            {
+                "repository": repository,
+                "file_path": file_path,
+                "function_name": function_name,
+            },
+        )    
