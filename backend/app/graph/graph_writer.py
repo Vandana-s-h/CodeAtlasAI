@@ -74,6 +74,36 @@ class GraphWriter:
             },
         )
 
+    def create_function_call(
+        self,
+        repository: str,
+        source_file: str,
+        source_function: str,
+        target_function: str,
+    ) -> dict:
+        query = """
+        MATCH (source:Function {
+            name: $source_function,
+            file_path: $source_file,
+            repository: $repository
+        })
+        MATCH (target:Function {
+            name: $target_function,
+            repository: $repository
+        })
+        MERGE (source)-[:CALLS]->(target)
+        RETURN source, target
+        """
+
+        return self.client.run_query(
+            query,
+            {
+                "repository": repository,
+                "source_file": source_file,
+                "source_function": source_function,
+                "target_function": target_function,
+            },
+        )
     def create_class(
         self,
         repository: str,
