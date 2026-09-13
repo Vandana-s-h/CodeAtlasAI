@@ -173,6 +173,23 @@ def write_analysis_to_graph(analysis: dict) -> dict:
     writer.create_repository(repository, url)
 
     for file_data in data.get("files", []):
+        for call in file_data.get("calls", []):
+            source_function = call.get("source_function")
+            target_function = call.get("target_function")
+
+            # Skip calls made outside a function
+            if not source_function or not target_function:
+                continue
+
+            # Keep only the final name from calls like helpers.get_answer
+            target_function = target_function.split(".")[-1]
+
+            writer.create_function_call(
+                repository,
+                file_path,
+                source_function,
+                target_function,
+            )
         file_path = file_data["path"]
         language = file_data.get("language", "unknown")
         loc = file_data.get("loc", 0)
@@ -197,6 +214,8 @@ def write_analysis_to_graph(analysis: dict) -> dict:
                 file_path=file_path,
                 function_name=function_name,
             )
+
+       
 
     for dependency in data.get("dependencies", []):
         writer.create_dependency(

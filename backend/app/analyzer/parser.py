@@ -20,7 +20,7 @@ def parse_python_file(file_path: str) -> dict:
     imports = []
     calls = []
 
-    def walk(node):
+    def walk(node, current_function=None):
         if node.type == "class_definition":
             name_node = node.child_by_field_name("name")
             if name_node:
@@ -28,8 +28,10 @@ def parse_python_file(file_path: str) -> dict:
 
         elif node.type in ("function_definition", "async_function_definition"):
             name_node = node.child_by_field_name("name")
+
             if name_node:
-                functions.append(name_node.text.decode("utf-8"))
+                current_function = name_node.text.decode("utf-8")
+                functions.append(current_function)
 
         elif node.type == "import_statement":
             imports.append(node.text.decode("utf-8"))
@@ -41,10 +43,13 @@ def parse_python_file(file_path: str) -> dict:
             function_node = node.child_by_field_name("function")
 
             if function_node:
-                calls.append(function_node.text.decode("utf-8"))    
+                calls.append({
+                    "source_function": current_function,
+                    "target_function": function_node.text.decode("utf-8"),
+                })
 
         for child in node.children:
-            walk(child)
+            walk(child, current_function)
 
     walk(root)
 

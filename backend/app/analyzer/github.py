@@ -66,9 +66,9 @@ def scan_repository(repo_path: str) -> dict:
         }.get(suffix, "Other")
 
         file_info = {
-            "path": str(path.relative_to(root)),
-            "language": language,
-            "loc": loc,
+           "path": str(path.relative_to(root)),
+           "language": language,
+           "loc": loc,
         }
 
         # Tree-sitter analysis for Python files
@@ -79,6 +79,7 @@ def scan_repository(repo_path: str) -> dict:
             file_info["functions"] = parsed["functions"]
             file_info["imports"] = parsed["imports"]
             file_info["has_syntax_errors"] = parsed["has_errors"]
+            file_info["calls"] = parsed["calls"]
 
         files.append(file_info)
 
