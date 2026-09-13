@@ -1,6 +1,7 @@
 from collections import defaultdict
-from git import Repo
 from pathlib import PurePosixPath
+
+from git import Repo
 
 
 def analyze_git_history(repo_path: str) -> dict:
@@ -20,28 +21,62 @@ def analyze_git_history(repo_path: str) -> dict:
     }
 
     for commit in repo.iter_commits():
-        if not commit.parents:
-            continue
-
         author = commit.author.email or commit.author.name
 
-        try:
-            stats = commit.stats.files
-        except Exception:
+        # Compare each commit with its first parent.
+        if commit.parents:
+            parent = commit.parents[0]
+            diff = parent.diff(commit, create_patch=False)
+
+        for parent in commit.parents:
+          diff = parent.diff(commit, create_patch=False)
+
+    
+
+    for changed_file in diff:
+        raw_path = changed_file.b_path or changed_file.a_path
+
+        if not raw_path:
             continue
 
-        for raw_path, data in stats.items():
-            path = str(PurePosixPath(raw_path))
+        path = str(PurePosixPath(raw_path))
+        path_parts = set(PurePosixPath(path).parts)
 
-            path_parts = set(PurePosixPath(path).parts)
+        if path_parts.intersection(excluded_directories):
+            continue
 
-            if path_parts.intersection(excluded_directories):
-                continue
+        file_commits[path] += 1
+        file_contributors[path].add(author)
 
-            file_commits[path] += 1
-            file_contributors[path].add(author)
-            file_added[path] += data.get("insertions", 0)
-            file_deleted[path] += data.get("deletions", 0)
+        file_added[path] += 0
+        file_deleted[path] += 0
+           
+
+        for changed_file in diff:
+                raw_path = changed_file.b_path or changed_file.a_path
+
+                if not raw_path:
+                    continue
+
+                path = str(PurePosixPath(raw_path))
+                path_parts = set(PurePosixPath(path).parts)
+
+                if path_parts.intersection(excluded_directories):
+                    continue
+
+                file_commits[path] += 1
+                file_contributors[path].add(author)
+
+                try:
+                    stats = commit.stats.files.get(raw_path, {})
+                    added = stats.get("insertions", 0)
+                    deleted = stats.get("deletions", 0)
+                except Exception:
+                    added = 0
+                    deleted = 0
+
+                file_added[path] += added
+                file_deleted[path] += deleted
 
     return {
         path: {

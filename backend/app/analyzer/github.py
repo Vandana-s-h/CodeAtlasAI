@@ -2,6 +2,9 @@ from pathlib import Path
 import tempfile
 import shutil
 
+from urllib.parse import urlparse
+import re
+
 from git import Repo
 
 from backend.app.analyzer.parser import parse_python_file
@@ -26,8 +29,7 @@ def validate_github_url(url: str) -> tuple[str, str]:
 
 
 def clone_repository(url: str, destination: str) -> None:
-    Repo.clone_from(url, destination, depth=1)
-
+    Repo.clone_from(repo_url, temp_dir)
 
 def scan_repository(repo_path: str) -> dict:
     files = []
@@ -131,24 +133,49 @@ def write_analysis_to_graph(repository: str, url: str, analysis: dict) -> None:
             target=dependency["target"],
         )
 
-def analyze_public_repository(url: str) -> dict:
-    owner, repo = validate_github_url(url)
+def parse_github_url(url: str) -> tuple[str, str]:
+    parsed = urlparse(url)
 
+    if parsed.netloc.lower() not in {"github.com", "www.github.com"}:
+        raise ValueError("Only GitHub URLs are supported")
+
+    parts = [part for part in parsed.path.split("/") if part]
+
+    if len(parts) < 2:
+        raise ValueError("Invalid GitHub repository URL")
+
+    owner = parts[0]
+    repo = re.sub(r"\.git$", "", parts[1])
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner):
+        raise ValueError("Invalid GitHub owner")
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", repo):
+        raise ValueError("Invalid GitHub repository name")
+
+    return owner, repo
+
+def analyze_public_repository(url: str) -> dict:
+    owner, repo = parse_github_url(url)
+
+    repo_url = f"https://github.com/{owner}/{repo}.git"
     temp_dir = tempfile.mkdtemp()
 
     try:
-        # Clone repository
-        clone_repository(url, temp_dir)
+        Repo.clone_from(repo_url, temp_dir)
 
-        # Analyze source code
+        cloned_repo = Repo(temp_dir)
+
+
         analysis = scan_repository(temp_dir)
 
-        # Analyze Git history for the cloned repository
         try:
-           analysis["git_history"] = analyze_git_history(temp_dir)
+            
+            analysis["git_history"] = analyze_git_history(temp_dir)
+            
         except Exception as error:
-           print("Git history analysis failed:", repr(error))
-           analysis["git_history"] = {}
+            print("Git history analysis failed:", repr(error))
+            analysis["git_history"] = {}
 
         return {
             "repository": f"{owner}/{repo}",
@@ -158,8 +185,4 @@ def analyze_public_repository(url: str) -> dict:
         }
 
     finally:
-        # Clean up temporary repository
-        try:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+        shutil.rmtree(temp_dir, ignore_errors=True)
