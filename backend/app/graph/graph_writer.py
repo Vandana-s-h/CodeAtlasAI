@@ -26,12 +26,18 @@ class GraphWriter:
         file_path: str,
         language: str,
         loc: int,
+        risk_label: int | None = None,
+        risk: str | None = None,
+        confidence: float | None = None,
     ) -> dict:
         query = """
         MATCH (r:Repository {name: $repository})
         MERGE (f:File {path: $file_path, repository: $repository})
         SET f.language = $language,
-            f.loc = $loc
+            f.loc = $loc,
+            f.risk_label = $risk_label,
+            f.risk = $risk,
+            f.risk_confidence = $confidence
         MERGE (r)-[:CONTAINS]->(f)
         RETURN f
         """
@@ -43,6 +49,9 @@ class GraphWriter:
                 "file_path": file_path,
                 "language": language,
                 "loc": loc,
+                "risk_label": risk_label,
+                "risk": risk,
+                "confidence": confidence,
             },
         )
 
@@ -104,6 +113,7 @@ class GraphWriter:
                 "target_function": target_function,
             },
         )
+
     def create_class(
         self,
         repository: str,
@@ -160,7 +170,8 @@ class GraphWriter:
                 "file_path": file_path,
                 "function_name": function_name,
             },
-        )    
+        )
+
 
 def write_analysis_to_graph(analysis: dict) -> dict:
     writer = GraphWriter()
@@ -169,36 +180,25 @@ def write_analysis_to_graph(analysis: dict) -> dict:
     url = analysis["url"]
 
     data = analysis.get("analysis", analysis)
+    risk_predictions = analysis.get("risk_predictions", {})
 
     writer.create_repository(repository, url)
 
     for file_data in data.get("files", []):
-        for call in file_data.get("calls", []):
-            source_function = call.get("source_function")
-            target_function = call.get("target_function")
-
-            # Skip calls made outside a function
-            if not source_function or not target_function:
-                continue
-
-            # Keep only the final name from calls like helpers.get_answer
-            target_function = target_function.split(".")[-1]
-
-            writer.create_function_call(
-                repository,
-                file_path,
-                source_function,
-                target_function,
-            )
         file_path = file_data["path"]
         language = file_data.get("language", "unknown")
         loc = file_data.get("loc", 0)
+
+        risk_data = risk_predictions.get(file_path, {})
 
         writer.create_file(
             repository=repository,
             file_path=file_path,
             language=language,
             loc=loc,
+            risk_label=risk_data.get("risk_label"),
+            risk=risk_data.get("risk"),
+            confidence=risk_data.get("confidence"),
         )
 
         for class_name in file_data.get("classes", []):
@@ -215,7 +215,21 @@ def write_analysis_to_graph(analysis: dict) -> dict:
                 function_name=function_name,
             )
 
-       
+        for call in file_data.get("calls", []):
+            source_function = call.get("source_function")
+            target_function = call.get("target_function")
+
+            if not source_function or not target_function:
+                continue
+
+            target_function = target_function.split(".")[-1]
+
+            writer.create_function_call(
+                repository=repository,
+                source_file=file_path,
+                source_function=source_function,
+                target_function=target_function,
+            )
 
     for dependency in data.get("dependencies", []):
         writer.create_dependency(
