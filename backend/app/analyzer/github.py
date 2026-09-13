@@ -7,6 +7,7 @@ from git import Repo
 from backend.app.analyzer.parser import parse_python_file
 from backend.app.analyzer.dependency import extract_python_dependencies
 from backend.app.graph.graph_writer import GraphWriter
+from backend.app.git_analysis.commits import analyze_git_history
 
 
 def validate_github_url(url: str) -> tuple[str, str]:
@@ -142,9 +143,12 @@ def analyze_public_repository(url: str) -> dict:
         # Analyze source code
         analysis = scan_repository(temp_dir)
 
-        # Git history temporarily disabled.
-        # We will implement an optimized version separately.
-        analysis["git_history"] = {}
+        # Analyze Git history for the cloned repository
+        try:
+           analysis["git_history"] = analyze_git_history(temp_dir)
+        except Exception as error:
+           print("Git history analysis failed:", repr(error))
+           analysis["git_history"] = {}
 
         return {
             "repository": f"{owner}/{repo}",

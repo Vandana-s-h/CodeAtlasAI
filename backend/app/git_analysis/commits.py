@@ -1,5 +1,6 @@
 from collections import defaultdict
 from git import Repo
+from pathlib import PurePosixPath
 
 
 def analyze_git_history(repo_path: str) -> dict:
@@ -9,6 +10,14 @@ def analyze_git_history(repo_path: str) -> dict:
     file_contributors = defaultdict(set)
     file_added = defaultdict(int)
     file_deleted = defaultdict(int)
+
+    excluded_directories = {
+        ".git",
+        "venv",
+        ".venv",
+        "node_modules",
+        "__pycache__",
+    }
 
     for commit in repo.iter_commits():
         if not commit.parents:
@@ -21,7 +30,14 @@ def analyze_git_history(repo_path: str) -> dict:
         except Exception:
             continue
 
-        for path, data in stats.items():
+        for raw_path, data in stats.items():
+            path = str(PurePosixPath(raw_path))
+
+            path_parts = set(PurePosixPath(path).parts)
+
+            if path_parts.intersection(excluded_directories):
+                continue
+
             file_commits[path] += 1
             file_contributors[path].add(author)
             file_added[path] += data.get("insertions", 0)
