@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from backend.app.graph.neo4j_query_client import Neo4jQueryClient
+client = Neo4jQueryClient()
 
 
 router = APIRouter(
@@ -167,3 +168,40 @@ def get_repository_graph(
             status_code=500,
             detail=str(error),
         )
+
+@router.get("/summary")
+def get_graph_summary(repository: str = Query(...)):
+    query = """
+MATCH (r:Repository {name: $repository})
+OPTIONAL MATCH (r)-[:CONTAINS*0..]->(n)
+WITH r, count(DISTINCT n) AS node_count
+OPTIONAL MATCH (source)-[rel]->(target)
+WHERE source.repository = $repository
+  AND target.repository = $repository
+RETURN node_count, count(rel) AS relationship_count
+"""
+
+    result = client.run_query(
+        query,
+        {"repository": repository},
+    )
+
+    
+
+    data = result.get("data", {})
+    values = data.get("values", [])
+
+    if not values:
+      return {
+        "repository": repository,
+        "node_count": 0,
+        "relationship_count": 0,
+    }
+
+    row = values[0]
+
+    return {
+    "repository": repository,
+    "node_count": row[0],
+    "relationship_count": row[1],
+}
