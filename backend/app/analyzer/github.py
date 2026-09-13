@@ -155,15 +155,22 @@ def parse_github_url(url: str) -> tuple[str, str]:
 
     return owner, repo
 
-def analyze_public_repository(url: str) -> dict:
+def analyze_public_repository(
+    url: str,
+    branch: str | None = None,
+) -> dict:
     owner, repo = parse_github_url(url)
 
     repo_url = f"https://github.com/{owner}/{repo}.git"
     temp_dir = tempfile.mkdtemp()
 
     try:
-        Repo.clone_from(repo_url, temp_dir)
+        clone_kwargs = {}
 
+        if branch:
+           clone_kwargs["branch"] = branch
+
+        Repo.clone_from(repo_url, temp_dir, **clone_kwargs)
         cloned_repo = Repo(temp_dir)
 
 

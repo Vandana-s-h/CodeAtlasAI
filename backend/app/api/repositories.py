@@ -13,12 +13,16 @@ router = APIRouter(
 
 class RepositoryRequest(BaseModel):
     url: HttpUrl
+    branch: str | None = None
 
 
 @router.post("/analyze")
 def analyze_repository(request: RepositoryRequest):
     try:
-        return analyze_public_repository(str(request.url))
+        return analyze_public_repository(
+    str(request.url),
+    branch=request.branch,
+)
     except Exception as error:
         raise HTTPException(
             status_code=500,
