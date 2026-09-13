@@ -11,6 +11,7 @@ from backend.app.analyzer.parser import parse_python_file
 from backend.app.analyzer.dependency import extract_python_dependencies
 from backend.app.graph.graph_writer import GraphWriter
 from backend.app.git_analysis.commits import analyze_git_history
+from backend.app.ml.predictor import predict_risks_for_files
 
 
 def validate_github_url(url: str) -> tuple[str, str]:
@@ -179,6 +180,9 @@ def analyze_public_repository(
         try:
             
             analysis["git_history"] = analyze_git_history(temp_dir)
+            analysis["risk_predictions"] = predict_risks_for_files(
+               analysis["git_history"]
+)
             
         except Exception as error:
             print("Git history analysis failed:", repr(error))

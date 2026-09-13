@@ -34,3 +34,16 @@ def predict_risk(metrics: dict[str, Any]) -> dict[str, Any]:
         "risk": "high" if prediction == 1 else "low",
         "confidence": round(probability, 4),
     }
+
+def predict_risks_for_files(
+    git_history: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    results = {}
+
+    for path, metrics in git_history.items():
+        results[path] = {
+            **metrics,
+            **predict_risk(metrics),
+        }
+
+    return results
