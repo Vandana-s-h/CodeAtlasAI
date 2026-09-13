@@ -205,3 +205,46 @@ RETURN node_count, count(rel) AS relationship_count
     "node_count": row[0],
     "relationship_count": row[1],
 }
+
+@router.get("/statistics")
+def get_graph_statistics(repository: str = Query(...)):
+    node_query = """
+    MATCH (n)
+    WHERE n.repository = $repository
+    UNWIND labels(n) AS label
+    RETURN label, count(*) AS count
+    ORDER BY label
+    """
+
+    relationship_query = """
+    MATCH (source)-[rel]->(target)
+    WHERE source.repository = $repository
+      AND target.repository = $repository
+    RETURN type(rel) AS relationship_type, count(*) AS count
+    ORDER BY relationship_type
+    """
+
+    node_result = client.run_query(
+        node_query,
+        {"repository": repository},
+    )
+
+    relationship_result = client.run_query(
+        relationship_query,
+        {"repository": repository},
+    )
+
+    node_values = node_result.get("data", {}).get("values", [])
+    relationship_values = relationship_result.get("data", {}).get("values", [])
+
+    return {
+        "repository": repository,
+        "nodes": {
+            row[0]: row[1]
+            for row in node_values
+        },
+        "relationships": {
+            row[0]: row[1]
+            for row in relationship_values
+        },
+    }
