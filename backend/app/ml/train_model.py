@@ -1,4 +1,5 @@
 from pathlib import Path
+from collections import Counter
 
 import joblib
 import pandas as pd
@@ -16,24 +17,45 @@ def train_model() -> None:
     rows = build_training_data(".")
     dataframe = pd.DataFrame(rows)
 
-    features = [
+    feature_columns = [
         "commits",
         "contributors",
         "lines_added",
         "lines_deleted",
-        "churn",
     ]
 
-    X = dataframe[features]
+    X = dataframe[feature_columns]
     y = dataframe["risk_label"]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y,
-    )
+    class_counts = Counter(y)
+
+    print("Class distribution:", dict(class_counts))
+
+    if len(class_counts) < 2:
+        raise ValueError(
+            "Training requires at least two classes in risk_label."
+        )
+
+    if min(class_counts.values()) < 2:
+        print(
+            "Warning: one class has fewer than 2 samples. "
+            "Training without stratification."
+        )
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+        )
+    else:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=y,
+        )
 
     model = RandomForestClassifier(
         n_estimators=100,
@@ -47,7 +69,13 @@ def train_model() -> None:
 
     print("Accuracy:", accuracy_score(y_test, predictions))
     print("\nClassification report:")
-    print(classification_report(y_test, predictions))
+    print(
+        classification_report(
+            y_test,
+            predictions,
+            zero_division=0,
+        )
+    )
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, MODEL_PATH)

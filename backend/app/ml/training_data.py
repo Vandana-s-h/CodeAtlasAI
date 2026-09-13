@@ -11,9 +11,8 @@ def build_training_data(repository_path: str = ".") -> list[dict[str, Any]]:
     for file_path, metrics in history.items():
         churn = metrics.get("churn", 0)
 
-        # Demonstration label only:
-        # files with churn >= 100 are marked as higher-risk.
-        risk_label = 1 if churn >= 100 else 0
+        # Demonstration label only.
+        risk_label = 1 if churn >= 20 else 0
 
         rows.append(
             {
@@ -26,5 +25,7 @@ def build_training_data(repository_path: str = ".") -> list[dict[str, Any]]:
                 "risk_label": risk_label,
             }
         )
+
+    print(f"Training rows generated: {len(rows)}")
 
     return rows

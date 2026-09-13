@@ -21,19 +21,43 @@ class RiskPredictionRequest(BaseModel):
 
 
 @router.get("/status")
-def risk_status():
+def risk_status() -> dict[str, Any]:
     return {
         "service": "risk-prediction",
-        "status": "ready",
+        "status": "prototype",
+        "description": (
+            "Heuristic proof-of-concept model. "
+            "Predictions require more representative labeled data "
+            "for reliable production use."
+        ),
+        "features": [
+            "commits",
+            "contributors",
+            "lines_added",
+            "lines_deleted",
+            "churn",
+        ],
     }
 
 
 @router.post("/predict")
-def predict_repository_risk(request: RiskPredictionRequest) -> dict[str, Any]:
+def predict_repository_risk(
+    request: RiskPredictionRequest,
+) -> dict[str, Any]:
     try:
-        return predict_risk(request.model_dump())
+        result = predict_risk(request.model_dump())
+
+        return {
+            "service": "risk-prediction",
+            "status": "prototype",
+            "prediction": result,
+        }
+
     except FileNotFoundError as error:
         raise HTTPException(
             status_code=503,
-            detail=str(error),
+            detail=(
+                "Risk model is not available. "
+                "Train the model before making predictions."
+            ),
         ) from error

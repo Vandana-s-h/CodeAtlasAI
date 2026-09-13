@@ -12,7 +12,7 @@ FEATURES = [
     "contributors",
     "lines_added",
     "lines_deleted",
-    "churn",
+    
 ]
 
 
