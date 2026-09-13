@@ -20,19 +20,23 @@ class RepositoryRequest(BaseModel):
 def analyze_repository(request: RepositoryRequest):
     try:
         return analyze_public_repository(
-    str(request.url),
-    branch=request.branch,
-)
+            str(request.url),
+            branch=request.branch,
+        )
     except Exception as error:
         raise HTTPException(
             status_code=500,
             detail=str(error),
         )
 
+
 @router.post("/analyze-and-index")
 def analyze_and_index_repository(request: RepositoryRequest):
     try:
-        analysis = analyze_public_repository(str(request.url))
+        analysis = analyze_public_repository(
+            str(request.url),
+            branch=request.branch,
+        )
 
         write_analysis_to_graph(analysis)
 
@@ -43,4 +47,7 @@ def analyze_and_index_repository(request: RepositoryRequest):
         }
 
     except Exception as error:
-        raise HTTPException(status_code=500, detail=str(error))
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )

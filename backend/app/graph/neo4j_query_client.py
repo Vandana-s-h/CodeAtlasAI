@@ -28,7 +28,7 @@ class Neo4jQueryClient:
             self.url,
             auth=(self.username, self.password),
             json=payload,
-            timeout=30,
+            timeout=120,
         )
 
         response.raise_for_status()

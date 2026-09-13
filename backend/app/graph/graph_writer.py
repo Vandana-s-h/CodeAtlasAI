@@ -1,9 +1,32 @@
 from backend.app.graph.neo4j_query_client import Neo4jQueryClient
 
 
+BATCH_SIZE = 50
+
+
 class GraphWriter:
     def __init__(self):
         self.client = Neo4jQueryClient()
+
+    def _run_batches(
+        self,
+        query: str,
+        items: list[dict],
+        repository: str,
+    ) -> None:
+        for start in range(0, len(items), BATCH_SIZE):
+            batch = items[start:start + BATCH_SIZE]
+
+            if not batch:
+                continue
+
+            self.client.run_query(
+                query,
+                {
+                    "repository": repository,
+                    "items": batch,
+                },
+            )
 
     def write_analysis(self, analysis: dict) -> dict:
         repository = analysis["repository"]
@@ -81,10 +104,10 @@ class GraphWriter:
             },
         )
 
-        self.client.run_query(
+        self._run_batches(
             """
+            UNWIND $items AS item
             MATCH (r:Repository {name: $repository})
-            UNWIND $files AS item
             MERGE (f:File {
                 path: item.path,
                 repository: $repository
@@ -96,15 +119,13 @@ class GraphWriter:
                 f.risk_confidence = item.confidence
             MERGE (r)-[:CONTAINS]->(f)
             """,
-            {
-                "repository": repository,
-                "files": files,
-            },
+            files,
+            repository,
         )
 
-        self.client.run_query(
+        self._run_batches(
             """
-            UNWIND $classes AS item
+            UNWIND $items AS item
             MATCH (f:File {
                 path: item.file_path,
                 repository: $repository
@@ -116,15 +137,13 @@ class GraphWriter:
             })
             MERGE (f)-[:CONTAINS]->(c)
             """,
-            {
-                "repository": repository,
-                "classes": classes,
-            },
+            classes,
+            repository,
         )
 
-        self.client.run_query(
+        self._run_batches(
             """
-            UNWIND $functions AS item
+            UNWIND $items AS item
             MATCH (f:File {
                 path: item.file_path,
                 repository: $repository
@@ -136,15 +155,13 @@ class GraphWriter:
             })
             MERGE (f)-[:CONTAINS]->(fn)
             """,
-            {
-                "repository": repository,
-                "functions": functions,
-            },
+            functions,
+            repository,
         )
 
-        self.client.run_query(
+        self._run_batches(
             """
-            UNWIND $calls AS item
+            UNWIND $items AS item
             MATCH (source:Function {
                 name: item.source_function,
                 file_path: item.source_file,
@@ -156,15 +173,13 @@ class GraphWriter:
             })
             MERGE (source)-[:CALLS]->(target)
             """,
-            {
-                "repository": repository,
-                "calls": calls,
-            },
+            calls,
+            repository,
         )
 
-        self.client.run_query(
+        self._run_batches(
             """
-            UNWIND $dependencies AS item
+            UNWIND $items AS item
             MATCH (source:File {
                 path: item.source,
                 repository: $repository
@@ -175,10 +190,8 @@ class GraphWriter:
             })
             MERGE (source)-[:IMPORTS]->(target)
             """,
-            {
-                "repository": repository,
-                "dependencies": dependencies,
-            },
+            dependencies,
+            repository,
         )
 
         return {

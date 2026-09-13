@@ -39,11 +39,48 @@ def scan_repository(repo_path: str) -> dict:
 
     root = Path(repo_path)
 
+    ignored_directories = {
+        ".git",
+        ".venv",
+        "venv",
+        "env",
+        "node_modules",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        "dist",
+        "build",
+        "site-packages",
+    }
+
+    supported_extensions = {
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".java",
+        ".cpp",
+        ".c",
+        ".go",
+        ".rs",
+    }
+
     for path in root.rglob("*"):
         if not path.is_file():
             continue
 
-        if ".git" in path.parts:
+        if any(part in ignored_directories for part in path.parts):
+            continue
+
+        if path.suffix.lower() not in supported_extensions:
+            continue
+
+        # Avoid processing unusually large source files.
+        try:
+            if path.stat().st_size > 1_000_000:
+                continue
+        except OSError:
             continue
 
         try:
@@ -53,7 +90,6 @@ def scan_repository(repo_path: str) -> dict:
 
         lines = text.splitlines()
         loc = len(lines)
-
         suffix = path.suffix.lower()
 
         language = {
@@ -70,20 +106,24 @@ def scan_repository(repo_path: str) -> dict:
         }.get(suffix, "Other")
 
         file_info = {
-           "path": str(path.relative_to(root)),
-           "language": language,
-           "loc": loc,
+            "path": str(path.relative_to(root)),
+            "language": language,
+            "loc": loc,
+            "classes": [],
+            "functions": [],
+            "imports": [],
+            "calls": [],
+            "has_syntax_errors": False,
         }
 
-        # Tree-sitter analysis for Python files
         if suffix == ".py":
             parsed = parse_python_file(str(path))
 
             file_info["classes"] = parsed["classes"]
             file_info["functions"] = parsed["functions"]
             file_info["imports"] = parsed["imports"]
-            file_info["has_syntax_errors"] = parsed["has_errors"]
             file_info["calls"] = parsed["calls"]
+            file_info["has_syntax_errors"] = parsed["has_errors"]
 
         files.append(file_info)
 
