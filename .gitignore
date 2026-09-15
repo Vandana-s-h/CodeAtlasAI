@@ -7,3 +7,19 @@ dist/
 *.log
 .DS_Store
 backend/workspaces/
+
+# Python virtual environments
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment secrets
+.env
+
+# IDE files
+.vscode/
+.idea/venv/
+.venv/

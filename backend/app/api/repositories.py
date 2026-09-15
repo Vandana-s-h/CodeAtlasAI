@@ -6,20 +6,29 @@ from app.analyzer.github import analyze_public_repository
 from app.db.database import SessionLocal
 from app.db.models import Repository
 from app.db.neo4j_db import create_file_nodes, create_repository_node
+from app.graph.graph_writer import write_analysis_to_graph
 
-router = APIRouter(prefix="/repositories", tags=["repositories"])
+
+router = APIRouter(
+    prefix="/api/repositories",
+    tags=["Repositories"],
+)
 
 
-class AnalyzeRequest(BaseModel):
+class RepositoryRequest(BaseModel):
     url: HttpUrl
+    branch: str | None = None
 
 
 @router.post("/analyze")
-def analyze(request: AnalyzeRequest):
+def analyze_repository(request: RepositoryRequest):
     db = SessionLocal()
 
     try:
-        result = analyze_public_repository(str(request.url))
+        result = analyze_public_repository(
+            str(request.url),
+            branch=request.branch,
+        )
 
         repository_data = result.get("repository", {})
         analysis_data = result.get("analysis", {})
@@ -83,3 +92,26 @@ def analyze(request: AnalyzeRequest):
 
     finally:
         db.close()
+
+
+@router.post("/analyze-and-index")
+def analyze_and_index_repository(request: RepositoryRequest):
+    try:
+        analysis = analyze_public_repository(
+            str(request.url),
+            branch=request.branch,
+        )
+
+        write_analysis_to_graph(analysis)
+
+        return {
+            "repository": analysis["repository"],
+            "status": "analyzed_and_indexed",
+            "analysis": analysis,
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
