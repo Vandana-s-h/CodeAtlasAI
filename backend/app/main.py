@@ -1,22 +1,20 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel, HttpUrl
 from typing import Any
-from pydantic import BaseModel, HttpUrl
 from fastapi.middleware.cors import CORSMiddleware
-from backend.app.api.repositories import router as repositories_router
 
-from backend.app.analyzer.github import analyze_public_repository
-
-from backend.app.api.analysis import router as analysis_router
-from backend.app.api.graph import router as graph_router
-from backend.app.api.risk import router as risk_router
-from backend.app.api.ai import router as ai_router
+from app.api.repositories import router as repositories_router
+from app.api.analysis import router as analysis_router
+from app.api.graph import router as graph_router
+from app.api.risk import router as risk_router
+from app.api.ai import router as ai_router
 
 
 app = FastAPI(
     title="CodeAtlas AI API",
     version="0.1.0",
 )
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,20 +27,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 app.include_router(repositories_router)
 app.include_router(analysis_router)
 app.include_router(graph_router)
 app.include_router(risk_router)
 app.include_router(ai_router)
 
+
 class RepositoryRequest(BaseModel):
     url: HttpUrl
+
 
 class RepositoryAnalysisResponse(BaseModel):
     repository: str
     url: str
     analysis: dict[str, Any]
     status: str
+
 
 @app.get("/")
 def root():
@@ -51,6 +53,7 @@ def root():
         "status": "healthy",
     }
 
+
 @app.get("/api/health")
 def health_check():
     return {
@@ -58,6 +61,7 @@ def health_check():
         "analyzer": "available",
         "status": "healthy",
     }
+
 
 @app.get("/debug-routes")
 def debug_routes():

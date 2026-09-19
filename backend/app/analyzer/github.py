@@ -7,11 +7,11 @@ import re
 
 from git import Repo
 
-from backend.app.analyzer.parser import parse_python_file
-from backend.app.analyzer.dependency import extract_python_dependencies
-from backend.app.graph.graph_writer import GraphWriter
-from backend.app.git_analysis.commits import analyze_git_history
-from backend.app.ml.predictor import predict_risks_for_files
+from app.analyzer.parser import parse_python_file
+from app.analyzer.dependency import extract_python_dependencies
+from app.graph.graph_writer import GraphWriter
+from app.git_analysis.commits import analyze_git_history
+from app.ml.predictor import predict_risks_for_files
 
 
 def validate_github_url(url: str) -> tuple[str, str]:

@@ -7,14 +7,14 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 
-from backend.app.ml.training_data import build_training_data
+from app.ml.training_data import build_training_data
 
 
-MODEL_PATH = Path("backend/app/ml/risk_model.joblib")
+MODEL_PATH = Path(__file__).resolve().parent / "risk_model.joblib"
 
 
 def train_model() -> None:
-    rows = build_training_data(".")
+    rows = build_training_data("..")
     dataframe = pd.DataFrame(rows)
 
     feature_columns = [

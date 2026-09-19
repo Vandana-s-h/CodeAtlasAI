@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.app.ml.predictor import predict_risk
+from app.ml.predictor import predict_risk
 
 
 router = APIRouter(

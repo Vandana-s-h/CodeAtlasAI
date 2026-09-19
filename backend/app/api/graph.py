@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 
-from backend.app.graph.neo4j_query_client import Neo4jQueryClient
+from app.graph.neo4j_query_client import Neo4jQueryClient
 client = Neo4jQueryClient()
 
 

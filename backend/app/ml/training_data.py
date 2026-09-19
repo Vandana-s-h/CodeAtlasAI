@@ -1,6 +1,6 @@
 from typing import Any
 
-from backend.app.git_analysis.commits import analyze_git_history
+from app.git_analysis.commits import analyze_git_history
 
 
 def build_training_data(repository_path: str = ".") -> list[dict[str, Any]]:

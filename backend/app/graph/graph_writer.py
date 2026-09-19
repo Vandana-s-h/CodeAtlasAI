@@ -1,4 +1,4 @@
-from backend.app.graph.neo4j_query_client import Neo4jQueryClient
+from app.graph.neo4j_query_client import Neo4jQueryClient
 
 
 BATCH_SIZE = 50

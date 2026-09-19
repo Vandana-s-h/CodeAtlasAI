@@ -1,35 +1,56 @@
 import os
 
-import requests
 from dotenv import load_dotenv
+from neo4j import GraphDatabase
 
 load_dotenv()
 
 
 class Neo4jQueryClient:
     def __init__(self):
-        self.url = os.getenv("NEO4J_QUERY_URL")
-        self.username = os.getenv("NEO4J_USERNAME")
-        self.password = os.getenv("NEO4J_PASSWORD")
+        uri = os.getenv("NEO4J_URI")
+        username = os.getenv("NEO4J_USERNAME")
+        password = os.getenv("NEO4J_PASSWORD")
 
-        if not self.url:
-            raise ValueError("NEO4J_QUERY_URL is not configured.")
+        if not uri:
+            raise ValueError("NEO4J_URI is not configured.")
 
-        if not self.username or not self.password:
+        if not username or not password:
             raise ValueError("Neo4j credentials are not configured.")
 
-    def run_query(self, statement: str, parameters: dict | None = None) -> dict:
-        payload = {
-            "statement": statement,
-            "parameters": parameters or {},
-        }
-
-        response = requests.post(
-            self.url,
-            auth=(self.username, self.password),
-            json=payload,
-            timeout=120,
+        self.driver = GraphDatabase.driver(
+            uri,
+            auth=(username, password),
         )
 
-        response.raise_for_status()
-        return response.json()
+    def run_query(
+        self,
+        statement: str,
+        parameters: dict | None = None,
+    ) -> dict:
+        with self.driver.session() as session:
+            result = session.run(
+                statement,
+                parameters or {},
+            )
+
+            records = result.data()
+
+        columns = []
+        if records:
+            columns = list(records[0].keys())
+
+        values = [
+            [record.get(column) for column in columns]
+            for record in records
+        ]
+
+        return {
+            "data": {
+                "fields": columns,
+                "values": values,
+            }
+        }
+
+    def close(self):
+        self.driver.close()

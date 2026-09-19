@@ -5,8 +5,7 @@ import joblib
 import pandas as pd
 
 
-MODEL_PATH = Path("backend/app/ml/risk_model.joblib")
-
+MODEL_PATH = Path(__file__).resolve().parent / "risk_model.joblib"
 FEATURES = [
     "commits",
     "contributors",
