@@ -1,12 +1,14 @@
 from collections import defaultdict
 from pathlib import PurePosixPath
+import subprocess
 
 from git import Repo
 
 
-def analyze_git_history(repo_path: str) -> dict:
-    repo = Repo(repo_path)
+MAX_COMMITS = 100
 
+
+def analyze_git_history(repo_path: str, max_commits: int = MAX_COMMITS) -> dict:
     file_commits = defaultdict(int)
     file_contributors = defaultdict(set)
     file_added = defaultdict(int)
@@ -20,42 +22,68 @@ def analyze_git_history(repo_path: str) -> dict:
         "__pycache__",
     }
 
-    for commit in repo.iter_commits():
-        author = commit.author.email or commit.author.name
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_path,
+                "log",
+                f"-n{max_commits}",
+                "--numstat",
+                "--format=COMMIT:%H|%ae",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=True,
+        )
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        return {}
 
-        # Skip the root commit because it has no parent to compare against.
-        if not commit.parents:
+    current_author = None
+
+    for line in result.stdout.splitlines():
+        if line.startswith("COMMIT:"):
+            parts = line.split("|", 1)
+            current_author = parts[1] if len(parts) > 1 else "unknown"
             continue
 
-        # Compare the commit with its first parent.
-        parent = commit.parents[0]
-        diff = parent.diff(commit, create_patch=False)
+        if not line.strip() or current_author is None:
+            continue
 
-        for changed_file in diff:
-            raw_path = changed_file.b_path or changed_file.a_path
+        parts = line.split("\t")
 
-            if not raw_path:
-                continue
+        if len(parts) < 3:
+            continue
 
-            path = str(PurePosixPath(raw_path))
-            path_parts = set(PurePosixPath(path).parts)
+        added_raw, deleted_raw, raw_path = parts[0], parts[1], parts[2]
 
-            if path_parts.intersection(excluded_directories):
-                continue
+        try:
+            added = int(added_raw)
+        except ValueError:
+            added = 0
 
-            file_commits[path] += 1
-            file_contributors[path].add(author)
+        try:
+            deleted = int(deleted_raw)
+        except ValueError:
+            deleted = 0
 
-            try:
-                stats = commit.stats.files.get(raw_path, {})
-                added = stats.get("insertions", 0)
-                deleted = stats.get("deletions", 0)
-            except Exception:
-                added = 0
-                deleted = 0
+        if " => " in raw_path:
+            raw_path = raw_path.split(" => ")[-1]
 
-            file_added[path] += added
-            file_deleted[path] += deleted
+        path = str(PurePosixPath(raw_path))
+        path_parts = set(PurePosixPath(path).parts)
+
+        if path_parts.intersection(excluded_directories):
+            continue
+
+        file_commits[path] += 1
+        file_contributors[path].add(current_author)
+        file_added[path] += added
+        file_deleted[path] += deleted
 
     return {
         path: {
