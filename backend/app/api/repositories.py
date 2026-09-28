@@ -20,6 +20,19 @@ class RepositoryRequest(BaseModel):
     branch: str | None = None
 
 
+def parse_repository_name(repository: str) -> tuple[str, str]:
+    """
+    Convert a GitHub repository name such as
+    'psf/requests' into ('psf', 'requests').
+    """
+    parts = repository.strip("/").split("/")
+
+    if len(parts) >= 2:
+        return parts[-2], parts[-1]
+
+    return "", repository
+
+
 @router.post("/analyze")
 def analyze_repository(request: RepositoryRequest):
     db = SessionLocal()
@@ -30,12 +43,23 @@ def analyze_repository(request: RepositoryRequest):
             branch=request.branch,
         )
 
-        repository_data = result.get("repository", {})
-        analysis_data = result.get("analysis", {})
+        repository_name = result.get(
+            "repository",
+            "",
+        )
 
-        repository_url = repository_data.get(
+        repository_url = result.get(
             "url",
             str(request.url),
+        )
+
+        analysis_data = result.get(
+            "analysis",
+            {},
+        )
+
+        owner, name = parse_repository_name(
+            repository_name
         )
 
         repository = db.execute(
@@ -46,22 +70,31 @@ def analyze_repository(request: RepositoryRequest):
 
         if repository is None:
             repository = Repository(
-                owner=repository_data.get("owner", ""),
-                name=repository_data.get("name", ""),
+                owner=owner,
+                name=name,
                 url=repository_url,
             )
+
             db.add(repository)
 
-        repository.owner = repository_data.get("owner", "")
-        repository.name = repository_data.get("name", "")
-        repository.file_count = analysis_data.get("file_count", 0)
-        repository.loc = analysis_data.get("loc", 0)
-        repository.status = result.get("status", "completed")
+        repository.owner = owner
+        repository.name = name
+        repository.url = repository_url
+        repository.file_count = analysis_data.get(
+            "file_count",
+            0,
+        )
+        repository.loc = analysis_data.get(
+            "loc",
+            0,
+        )
+        repository.status = result.get(
+            "status",
+            "completed",
+        )
 
         db.commit()
         db.refresh(repository)
-
-        result["repository"]["id"] = repository.id
 
         create_repository_node(
             owner=repository.owner,
@@ -71,13 +104,19 @@ def analyze_repository(request: RepositoryRequest):
 
         create_file_nodes(
             repository_url=repository.url,
-            files=analysis_data.get("files", []),
+            files=analysis_data.get(
+                "files",
+                [],
+            ),
         )
+
+        result["repository_id"] = repository.id
 
         return result
 
     except ValueError as exc:
         db.rollback()
+
         raise HTTPException(
             status_code=400,
             detail=str(exc),
@@ -85,8 +124,17 @@ def analyze_repository(request: RepositoryRequest):
 
     except RuntimeError as exc:
         db.rollback()
+
         raise HTTPException(
             status_code=502,
+            detail=str(exc),
+        )
+
+    except Exception as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
             detail=str(exc),
         )
 
@@ -95,20 +143,37 @@ def analyze_repository(request: RepositoryRequest):
 
 
 @router.post("/analyze-and-index")
-def analyze_and_index_repository(request: RepositoryRequest):
+def analyze_and_index_repository(
+    request: RepositoryRequest,
+):
     try:
         analysis = analyze_public_repository(
             str(request.url),
             branch=request.branch,
         )
 
-        write_analysis_to_graph(analysis)
+        graph_result = write_analysis_to_graph(
+            analysis
+        )
 
         return {
             "repository": analysis["repository"],
             "status": "analyzed_and_indexed",
             "analysis": analysis,
+            "graph": graph_result,
         }
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc),
+        )
 
     except Exception as error:
         raise HTTPException(

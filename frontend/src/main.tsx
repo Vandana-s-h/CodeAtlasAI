@@ -1,12 +1,21 @@
-import { FormEvent, useMemo, useState } from "react";
+import {
+  useMemo,
+  useState,
+  type MouseEvent,
+} from "react";
 import { createRoot } from "react-dom/client";
-import "./styles.css";
 
-type Repository = {
-  owner: string;
-  name: string;
-  url: string;
-};
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  type Edge,
+  type Node,
+} from "@xyflow/react";
+
+import "@xyflow/react/dist/style.css";
+import "./styles.css";
 
 type FileInfo = {
   path: string;
@@ -15,1404 +24,229 @@ type FileInfo = {
 };
 
 type Analysis = {
-  file_count: number;
-  loc: number;
-  languages: Record<string, number>;
-  files: FileInfo[];
-  files_truncated: boolean;
+  files?: FileInfo[];
+  file_count?: number;
+  loc?: number;
+  languages?: Record<string, number>;
 };
 
 type AnalysisResult = {
-  repository: Repository;
-  analysis: Analysis;
-  status: string;
+  repository?: string;
+  url?: string;
+  analysis?: Analysis;
+  status?: string;
+  repository_id?: number;
+};
+
+type GraphNode = {
+  id: string;
+  label: string;
+  type: string;
+
+  name?: string;
+  path?: string;
+  file_path?: string;
+
+  language?: string;
+  loc?: number;
+
+  repository?: string;
+
+  risk?: number | string;
+  risk_label?: string;
+  risk_confidence?: number | string;
+
+  // Complete Neo4j node properties.
+  properties?: Record<string, unknown>;
+};
+
+type GraphEdge = {
+  id?: string;
+  source: string;
+  target: string;
+  relationship: string;
 };
 
 const EMPTY_RESULT: AnalysisResult = {
-  repository: {
-    owner: "",
-    name: "",
-    url: "",
-  },
+  repository: "",
+  url: "",
   analysis: {
+    files: [],
     file_count: 0,
     loc: 0,
     languages: {},
-    files: [],
-    files_truncated: false,
   },
-  status: "",
 };
 
-function formatNumber(value: number) {
+function formatNumber(
+  value: number | undefined
+): string {
   return Number(value || 0).toLocaleString();
 }
 
-function normalizePath(path: string) {
-  return path
-    .replace(/\\/g, "/")
-    .replace(/^\/+/, "")
-    .toLowerCase();
+function normalizePath(
+  value: unknown
+): string {
+  return typeof value === "string"
+    ? value
+    : "";
 }
 
-function isTestFile(path: string) {
-  const normalized = normalizePath(path);
-  const parts = normalized.split("/");
-  const filename = parts[parts.length - 1] || "";
+function isTestFile(
+  path: string
+): boolean {
+  const lower = path.toLowerCase();
 
-  /*
-   * Count files that are:
-   *
-   * 1. Inside a test/tests directory
-   * 2. Named test_*.*
-   * 3. Named *_test.*
-   *
-   * This avoids incorrectly counting files merely because
-   * the word "test" appears somewhere in their path.
-   */
-  const insideTestDirectory =
-    parts.includes("test") ||
-    parts.includes("tests") ||
-    parts.includes("__tests__");
-
-  const testFilename =
-    filename.startsWith("test_") ||
-    filename.endsWith("_test.py") ||
-    filename.endsWith(".test.js") ||
-    filename.endsWith(".test.jsx") ||
-    filename.endsWith(".test.ts") ||
-    filename.endsWith(".test.tsx") ||
-    filename.endsWith(".spec.js") ||
-    filename.endsWith(".spec.jsx") ||
-    filename.endsWith(".spec.ts") ||
-    filename.endsWith(".spec.tsx");
-
-  return insideTestDirectory || testFilename;
+  return (
+    lower.includes("test") ||
+    lower.includes("tests") ||
+    lower.includes("__tests__")
+  );
 }
 
-function App() {
-  const [url, setUrl] = useState("");
-  const [result, setResult] =
-    useState<AnalysisResult>(EMPTY_RESULT);
+function getFileSymbol(
+  language: string
+): string {
+  const normalized =
+    language.toLowerCase();
 
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const [search, setSearch] = useState("");
-  const [language, setLanguage] = useState("All");
-  const [sortBy, setSortBy] = useState<
-    "name" | "loc-desc" | "loc-asc"
-  >("name");
-
-  const [selectedFile, setSelectedFile] =
-    useState<FileInfo | null>(null);
-
-  async function analyzeRepository(
-    event: FormEvent
-  ) {
-    event.preventDefault();
-
-    const repositoryUrl = url.trim();
-
-    if (!repositoryUrl) {
-      setError(
-        "Please enter a GitHub repository URL."
-      );
-      return;
-    }
-
-    if (
-      !/^https?:\/\/(www\.)?github\.com\/[^/]+\/[^/]+\/?$/.test(
-        repositoryUrl
-      )
-    ) {
-      setError(
-        "Please enter a valid public GitHub repository URL."
-      );
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-    setSelectedFile(null);
-
-    try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/api/repositories/analyze",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({
-            url: repositoryUrl,
-          }),
-        }
-      );
-
-      let data: any = null;
-
-      try {
-        data = await response.json();
-      } catch {
-        throw new Error(
-          "The backend returned an invalid response."
-        );
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          data?.detail ||
-            data?.message ||
-            "Repository analysis failed."
-        );
-      }
-
-      const rawFiles = Array.isArray(
-        data?.analysis?.files
-      )
-        ? data.analysis.files
-        : [];
-
-      const files: FileInfo[] = rawFiles
-        .map((file: unknown) => {
-          if (typeof file === "string") {
-            return {
-              path: file,
-              language: "Unknown",
-              loc: 0,
-            };
-          }
-
-          if (
-            file &&
-            typeof file === "object"
-          ) {
-            const item =
-              file as Record<string, unknown>;
-
-            return {
-              path:
-                typeof item.path === "string"
-                  ? item.path
-                  : "",
-
-              language:
-                typeof item.language === "string"
-                  ? item.language
-                  : "Unknown",
-
-              loc:
-                typeof item.loc === "number"
-                  ? item.loc
-                  : Number(item.loc ?? 0),
-            };
-          }
-
-          return null;
-        })
-        .filter(
-          (file): file is FileInfo =>
-            file !== null &&
-            file.path.trim().length > 0
-        );
-
-      /*
-       * Deduplicate files by normalized path.
-       * This prevents the same repository file from
-       * being counted twice in the frontend.
-       */
-      const uniqueFiles: FileInfo[] = [];
-      const seenPaths = new Set<string>();
-
-      for (const file of files) {
-        const normalizedPath =
-          normalizePath(file.path);
-
-        if (seenPaths.has(normalizedPath)) {
-          continue;
-        }
-
-        seenPaths.add(normalizedPath);
-        uniqueFiles.push(file);
-      }
-
-      const backendLanguages =
-        data?.analysis?.languages;
-
-      const languagesData: Record<
-        string,
-        number
-      > =
-        backendLanguages &&
-        typeof backendLanguages === "object"
-          ? Object.fromEntries(
-              Object.entries(
-                backendLanguages
-              ).map(([name, count]) => [
-                name,
-                Number(count) || 0,
-              ])
-            )
-          : {};
-
-      const normalizedResult: AnalysisResult = {
-        repository: {
-          owner:
-            typeof data?.repository?.owner ===
-            "string"
-              ? data.repository.owner
-              : "",
-
-          name:
-            typeof data?.repository?.name ===
-            "string"
-              ? data.repository.name
-              : "",
-
-          url:
-            typeof data?.repository?.url ===
-            "string"
-              ? data.repository.url
-              : repositoryUrl,
-        },
-
-        analysis: {
-          /*
-           * Use the backend's repository metric when it
-           * exists, otherwise fall back to unique files.
-           */
-          file_count:
-            typeof data?.analysis?.file_count ===
-            "number"
-              ? data.analysis.file_count
-              : uniqueFiles.length,
-
-          loc:
-            typeof data?.analysis?.loc ===
-            "number"
-              ? data.analysis.loc
-              : uniqueFiles.reduce(
-                  (sum, file) =>
-                    sum + file.loc,
-                  0
-                ),
-
-          languages: languagesData,
-
-          files: uniqueFiles,
-
-          files_truncated: Boolean(
-            data?.analysis?.files_truncated
-          ),
-        },
-
-        status:
-          typeof data?.status === "string"
-            ? data.status
-            : "completed",
-      };
-
-      setResult(normalizedResult);
-
-      setSearch("");
-      setLanguage("All");
-      setSortBy("name");
-    } catch (err) {
-      console.error(err);
-
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Something went wrong while analyzing the repository."
-      );
-    } finally {
-      setLoading(false);
-    }
+  if (normalized.includes("python")) {
+    return "🐍";
   }
 
-  /*
-   * -------------------------------------------------------
-   * DERIVED REPOSITORY METRICS
-   * -------------------------------------------------------
-   */
-
-  const testFiles = useMemo(() => {
-    return result.analysis.files.filter(
-      (file) => isTestFile(file.path)
-    );
-  }, [result.analysis.files]);
-
-  const testLoc = useMemo(() => {
-    return testFiles.reduce(
-      (sum, file) => sum + file.loc,
-      0
-    );
-  }, [testFiles]);
-
-  const averageFileSize = useMemo(() => {
-    if (result.analysis.files.length === 0) {
-      return 0;
-    }
-
-    return Math.round(
-      result.analysis.files.reduce(
-        (sum, file) => sum + file.loc,
-        0
-      ) / result.analysis.files.length
-    );
-  }, [result.analysis.files]);
-
-  const largestFile = useMemo(() => {
-    if (result.analysis.files.length === 0) {
-      return null;
-    }
-
-    return [...result.analysis.files].sort(
-      (a, b) => b.loc - a.loc
-    )[0];
-  }, [result.analysis.files]);
-
-  const largestFiles = useMemo(() => {
-    return [...result.analysis.files]
-      .sort((a, b) => b.loc - a.loc)
-      .slice(0, 5);
-  }, [result.analysis.files]);
-
-  const languageEntries = useMemo(() => {
-    return Object.entries(
-      result.analysis.languages || {}
-    ).sort(
-      (a, b) =>
-        Number(b[1]) - Number(a[1])
-    );
-  }, [result.analysis.languages]);
-
-  const languages = useMemo(() => {
-    const unique = Array.from(
-      new Set(
-        result.analysis.files
-          .map((file) => file.language)
-          .filter(Boolean)
-      )
-    ).sort();
-
-    return ["All", ...unique];
-  }, [result.analysis.files]);
-
-  /*
-   * -------------------------------------------------------
-   * CODE EXPLORER
-   * -------------------------------------------------------
-   */
-
-  const filteredFiles = useMemo(() => {
-    const query =
-      search.toLowerCase().trim();
-
-    const filtered =
-      result.analysis.files.filter(
-        (file) => {
-          const matchesSearch =
-            !query ||
-            file.path
-              .toLowerCase()
-              .includes(query);
-
-          const matchesLanguage =
-            language === "All" ||
-            file.language === language;
-
-          return (
-            matchesSearch &&
-            matchesLanguage
-          );
-        }
-      );
-
-    return [...filtered].sort(
-      (a, b) => {
-        if (sortBy === "loc-desc") {
-          return b.loc - a.loc;
-        }
-
-        if (sortBy === "loc-asc") {
-          return a.loc - b.loc;
-        }
-
-        return a.path.localeCompare(
-          b.path
-        );
-      }
-    );
-  }, [
-    result.analysis.files,
-    search,
-    language,
-    sortBy,
-  ]);
-
-  const isDashboard =
-    Boolean(result.repository.name);
-
-  return (
-    <div className="app-shell">
-
-      {/* =====================================================
-          NAVBAR
-      ===================================================== */}
-
-      <header className="navbar">
-        <div className="brand">
-          <div className="brand-mark">
-            C
-          </div>
-
-          <div>
-            <div className="brand-name">
-              CodeAtlas AI
-            </div>
-
-            <div className="brand-tagline">
-              Map. Understand. Predict.
-            </div>
-          </div>
-        </div>
-
-        <div className="nav-pill">
-          <span className="status-dot" />
-          Public GitHub repositories
-        </div>
-      </header>
-
-      <main>
-
-        {/* ===================================================
-            LANDING PAGE
-        =================================================== */}
-
-        {!isDashboard && (
-          <>
-            <section className="hero">
-              <div className="hero-badge">
-                <span>✦</span>
-                AI-powered software intelligence
-              </div>
-
-              <h1>
-                Understand any
-                <br />
-                <span>codebase.</span>
-              </h1>
-
-              <p className="hero-description">
-                Analyze a GitHub repository and turn
-                its source code into an intelligent map
-                of structure, complexity, dependencies,
-                and risk.
-              </p>
-
-              <form
-                className="analyze-box"
-                onSubmit={analyzeRepository}
-              >
-                <div className="input-wrapper">
-                  <span className="input-icon">
-                    ↗
-                  </span>
-
-                  <input
-                    type="url"
-                    value={url}
-                    onChange={(event) =>
-                      setUrl(
-                        event.target.value
-                      )
-                    }
-                    placeholder="https://github.com/owner/repository"
-                    disabled={loading}
-                  />
-                </div>
-
-                <button
-                  className="analyze-button"
-                  type="submit"
-                  disabled={loading}
-                >
-                  {loading
-                    ? "Analyzing..."
-                    : "Analyze repository"}
-
-                  <span>→</span>
-                </button>
-              </form>
-
-              {error && (
-                <div className="error-message">
-                  {error}
-                </div>
-              )}
-
-              <div className="hero-note">
-                Currently supports public GitHub
-                repositories
-              </div>
-            </section>
-
-            <section className="features-section">
-              <div className="section-label">
-                WHAT CODEATLAS DOES
-              </div>
-
-              <div className="feature-grid">
-                <FeatureCard
-                  number="01"
-                  title="Repository Mapping"
-                  description="Build a structured view of your repository, files, languages, and dependencies."
-                />
-
-                <FeatureCard
-                  number="02"
-                  title="Code Understanding"
-                  description="Explore the important parts of a large codebase instead of navigating blindly."
-                />
-
-                <FeatureCard
-                  number="03"
-                  title="Risk Prediction"
-                  description="Use repository signals and machine learning to identify potentially risky changes."
-                />
-
-                <FeatureCard
-                  number="04"
-                  title="Change Impact"
-                  description="Understand which parts of the system may be affected before changing code."
-                />
-
-                <FeatureCard
-                  number="05"
-                  title="AI Engineering Assistant"
-                  description="Ask repository-aware questions about architecture, implementation, and dependencies."
-                />
-
-                <FeatureCard
-                  number="06"
-                  title="Hotspot Detection"
-                  description="Find complex and frequently changing areas that deserve extra engineering attention."
-                />
-              </div>
-            </section>
-
-            <section className="steps-section">
-              <div className="section-label">
-                HOW IT WORKS
-              </div>
-
-              <div className="steps-grid">
-                <Step
-                  number="01"
-                  title="Connect"
-                  description="Provide a public GitHub repository."
-                />
-
-                <Step
-                  number="02"
-                  title="Analyze"
-                  description="CodeAtlas scans the repository and extracts meaningful engineering signals."
-                />
-
-                <Step
-                  number="03"
-                  title="Explore"
-                  description="Navigate the codebase through an intelligent engineering dashboard."
-                />
-              </div>
-            </section>
-          </>
-        )}
-
-        {/* ===================================================
-            DASHBOARD
-        =================================================== */}
-
-        {isDashboard && (
-          <section className="dashboard">
-
-            {/* HEADER */}
-
-            <div className="dashboard-header">
-              <div>
-                <div className="section-label">
-                  REPOSITORY ANALYSIS
-                </div>
-
-                <h1>
-                  {result.repository.name}
-                </h1>
-
-                <p>
-                  {result.repository.owner}
-                  {" · "}
-                  Public GitHub repository
-                </p>
-
-                <div className="repo-url">
-                  {result.repository.url}
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => {
-                  setResult(
-                    EMPTY_RESULT
-                  );
-                  setUrl("");
-                  setError("");
-                  setSearch("");
-                  setSelectedFile(null);
-                }}
-              >
-                Analyze another
-              </button>
-            </div>
-
-            {/* =================================================
-                TOP STATISTICS
-            ================================================= */}
-
-            <div className="stats-grid">
-
-              <Stat
-                label="FILES"
-                value={formatNumber(
-                  result.analysis.file_count
-                )}
-              />
-
-              <Stat
-                label="LINES OF CODE"
-                value={formatNumber(
-                  result.analysis.loc
-                )}
-              />
-
-              <Stat
-                label="LANGUAGES"
-                value={formatNumber(
-                  languageEntries.length
-                )}
-              />
-
-              <Stat
-                label="TEST FILES"
-                value={formatNumber(
-                  testFiles.length
-                )}
-                subtitle={`${formatNumber(
-                  testLoc
-                )} test LOC`}
-              />
-
-            </div>
-
-            {/* =================================================
-                MAIN DASHBOARD GRID
-            ================================================= */}
-
-            <div className="dashboard-grid">
-
-              {/* ===============================================
-                  LEFT / MAIN COLUMN
-              =============================================== */}
-
-              <div className="main-column">
-
-                {/* REPOSITORY OVERVIEW */}
-
-                <section className="panel">
-                  <div className="panel-header">
-                    <div>
-                      <div className="panel-title">
-                        Repository Overview
-                      </div>
-
-                      <div className="panel-subtitle">
-                        High-level engineering signals
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="panel-body">
-
-                    <div className="overview-metrics">
-
-                      <OverviewMetric
-                        label="Total files"
-                        value={formatNumber(
-                          result.analysis.file_count
-                        )}
-                      />
-
-                      <OverviewMetric
-                        label="Total LOC"
-                        value={formatNumber(
-                          result.analysis.loc
-                        )}
-                      />
-
-                      <OverviewMetric
-                        label="Average file size"
-                        value={`${formatNumber(
-                          averageFileSize
-                        )} LOC`}
-                      />
-
-                      <OverviewMetric
-                        label="Largest file"
-                        value={
-                          largestFile
-                            ? `${formatNumber(
-                                largestFile.loc
-                              )} LOC`
-                            : "—"
-                        }
-                      />
-
-                      <OverviewMetric
-                        label="Test files"
-                        value={formatNumber(
-                          testFiles.length
-                        )}
-                      />
-
-                      <OverviewMetric
-                        label="Test LOC"
-                        value={formatNumber(
-                          testLoc
-                        )}
-                      />
-
-                    </div>
-
-                    {/* TESTING SIGNAL */}
-
-                    <div className="testing-signal">
-                      <div>
-                        <div className="signal-label">
-                          TESTING SIGNAL
-                        </div>
-
-                        <div className="signal-description">
-                          Files detected using repository
-                          test naming conventions
-                        </div>
-                      </div>
-
-                      <div className="signal-value">
-                        <strong>
-                          {formatNumber(
-                            testFiles.length
-                          )}
-                        </strong>
-
-                        <span>
-                          files
-                        </span>
-
-                        <small>
-                          {formatNumber(
-                            testLoc
-                          )}{" "}
-                          LOC
-                        </small>
-                      </div>
-                    </div>
-
-                    {/* LARGEST FILES */}
-
-                    <div className="overview-section">
-                      <div className="section-heading-row">
-                        <div>
-                          <div className="panel-title">
-                            Largest files
-                          </div>
-
-                          <div className="panel-subtitle">
-                            Files with the highest LOC
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="largest-files">
-                        {largestFiles.map(
-                          (file, index) => (
-                            <button
-                              type="button"
-                              key={file.path}
-                              className="largest-file"
-                              onClick={() =>
-                                setSelectedFile(
-                                  file
-                                )
-                              }
-                            >
-                              <span className="largest-rank">
-                                {String(
-                                  index + 1
-                                ).padStart(
-                                  2,
-                                  "0"
-                                )}
-                              </span>
-
-                              <span className="largest-file-info">
-                                <strong>
-                                  {file.path}
-                                </strong>
-
-                                <small>
-                                  {file.language}
-                                </small>
-                              </span>
-
-                              <span className="largest-loc">
-                                {formatNumber(
-                                  file.loc
-                                )}{" "}
-                                LOC
-                              </span>
-
-                              <span className="largest-arrow">
-                                →
-                              </span>
-                            </button>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </section>
-
-                {/* CODE EXPLORER */}
-
-                <section className="panel explorer-panel">
-                  <div className="panel-header explorer-header">
-                    <div>
-                      <div className="panel-title">
-                        Code Explorer
-                      </div>
-
-                      <div className="panel-subtitle">
-                        Explore files detected in the
-                        repository
-                      </div>
-                    </div>
-
-                    <div className="file-count">
-                      {formatNumber(
-                        filteredFiles.length
-                      )}{" "}
-                      files
-                    </div>
-                  </div>
-
-                  <div className="explorer-controls">
-
-                    <div className="search-box">
-                      <span>⌕</span>
-
-                      <input
-                        value={search}
-                        onChange={(event) =>
-                          setSearch(
-                            event.target.value
-                          )
-                        }
-                        placeholder="Search files..."
-                      />
-                    </div>
-
-                    <select
-                      value={language}
-                      onChange={(event) =>
-                        setLanguage(
-                          event.target.value
-                        )
-                      }
-                    >
-                      {languages.map(
-                        (item) => (
-                          <option
-                            key={item}
-                            value={item}
-                          >
-                            {item === "All"
-                              ? "All languages"
-                              : item}
-                          </option>
-                        )
-                      )}
-                    </select>
-
-                    <select
-                      value={sortBy}
-                      onChange={(event) =>
-                        setSortBy(
-                          event.target
-                            .value as
-                            | "name"
-                            | "loc-desc"
-                            | "loc-asc"
-                        )
-                      }
-                    >
-                      <option value="name">
-                        Name
-                      </option>
-
-                      <option value="loc-desc">
-                        LOC: High → Low
-                      </option>
-
-                      <option value="loc-asc">
-                        LOC: Low → High
-                      </option>
-                    </select>
-
-                  </div>
-
-                  {filteredFiles.length ===
-                  0 ? (
-                    <div className="empty-state">
-                      <div className="empty-icon">
-                        ⌕
-                      </div>
-
-                      <h3>
-                        No files found
-                      </h3>
-
-                      <p>
-                        Try changing your search
-                        or language filter.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="file-list">
-                      {filteredFiles.map(
-                        (file) => (
-                          <button
-                            type="button"
-                            key={file.path}
-                            className={`file-row ${
-                              selectedFile?.path ===
-                              file.path
-                                ? "selected"
-                                : ""
-                            }`}
-                            onClick={() =>
-                              setSelectedFile(
-                                file
-                              )
-                            }
-                          >
-                            <div className="file-symbol">
-                              {getFileSymbol(
-                                file.language
-                              )}
-                            </div>
-
-                            <div className="file-info">
-                              <div className="file-path">
-                                {file.path}
-                              </div>
-
-                              <div className="file-meta">
-                                {
-                                  file.language
-                                }
-                              </div>
-                            </div>
-
-                            <div className="file-loc">
-                              {formatNumber(
-                                file.loc
-                              )}{" "}
-                              LOC
-                            </div>
-
-                            <div className="file-arrow">
-                              →
-                            </div>
-                          </button>
-                        )
-                      )}
-                    </div>
-                  )}
-
-                  {result.analysis.files_truncated && (
-                    <div className="notice">
-                      The analyzer returned a
-                      truncated file list. Some
-                      repository files are not
-                      displayed.
-                    </div>
-                  )}
-                </section>
-              </div>
-
-              {/* ===============================================
-                  RIGHT COLUMN
-              =============================================== */}
-
-              <aside className="side-column">
-
-                {/* FILE DETAILS */}
-
-                <section className="side-panel">
-                  <div className="panel-header">
-                    <div className="panel-title">
-                      File details
-                    </div>
-                  </div>
-
-                  {selectedFile ? (
-                    <div className="file-detail">
-
-                      <div className="detail-symbol">
-                        {getFileSymbol(
-                          selectedFile.language
-                        )}
-                      </div>
-
-                      <h3>
-                        {selectedFile.path}
-                      </h3>
-
-                      <div className="detail-row">
-                        <span>
-                          Language
-                        </span>
-
-                        <strong>
-                          {
-                            selectedFile.language
-                          }
-                        </strong>
-                      </div>
-
-                      <div className="detail-row">
-                        <span>
-                          Lines of code
-                        </span>
-
-                        <strong>
-                          {formatNumber(
-                            selectedFile.loc
-                          )}
-                        </strong>
-                      </div>
-
-                      <div className="detail-row">
-                        <span>
-                          Risk score
-                        </span>
-
-                        <strong className="muted-value">
-                          Coming soon
-                        </strong>
-                      </div>
-
-                      <div className="detail-row">
-                        <span>
-                          Dependencies
-                        </span>
-
-                        <strong className="muted-value">
-                          Coming soon
-                        </strong>
-                      </div>
-
-                      <div className="detail-row">
-                        <span>
-                          AI explanation
-                        </span>
-
-                        <strong className="muted-value">
-                          Coming soon
-                        </strong>
-                      </div>
-
-                    </div>
-                  ) : (
-                    <div className="selection-empty">
-                      <div className="selection-icon">
-                        ⌁
-                      </div>
-
-                      <p>
-                        Select a file to inspect
-                        its details.
-                      </p>
-                    </div>
-                  )}
-                </section>
-
-                {/* LANGUAGES */}
-
-                <section className="side-panel">
-                  <div className="panel-header">
-                    <div className="panel-title">
-                      Languages
-                    </div>
-                  </div>
-
-                  <div className="language-list">
-                    {languageEntries.map(
-                      ([name, count]) => {
-                        const percentage =
-                          result.analysis.file_count >
-                          0
-                            ? Math.round(
-                                (Number(
-                                  count
-                                ) /
-                                  result.analysis
-                                    .file_count) *
-                                  100
-                              )
-                            : 0;
-
-                        return (
-                          <div
-                            className="language-item"
-                            key={name}
-                          >
-                            <div className="language-top">
-                              <span>
-                                {name}
-                              </span>
-
-                              <strong>
-                                {formatNumber(
-                                  Number(
-                                    count
-                                  )
-                                )}
-                              </strong>
-                            </div>
-
-                            <div className="language-bar">
-                              <div
-                                className="language-fill"
-                                style={{
-                                  width: `${percentage}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      }
-                    )}
-                  </div>
-                </section>
-
-                {/* LARGEST FILE */}
-
-                <section className="side-panel">
-                  <div className="panel-header">
-                    <div className="panel-title">
-                      Largest file
-                    </div>
-                  </div>
-
-                  {largestFile ? (
-                    <button
-                      type="button"
-                      className="largest-side-file"
-                      onClick={() =>
-                        setSelectedFile(
-                          largestFile
-                        )
-                      }
-                    >
-                      <div className="detail-symbol">
-                        {getFileSymbol(
-                          largestFile.language
-                        )}
-                      </div>
-
-                      <strong>
-                        {largestFile.path}
-                      </strong>
-
-                      <span>
-                        {formatNumber(
-                          largestFile.loc
-                        )}{" "}
-                        LOC
-                      </span>
-                    </button>
-                  ) : (
-                    <div className="selection-empty">
-                      No file data available.
-                    </div>
-                  )}
-                </section>
-
-              </aside>
-            </div>
-
-            {/* =================================================
-                FUTURE FEATURES
-            ================================================= */}
-
-            <section className="future-features">
-              <div className="section-label">
-                NEXT INTELLIGENCE LAYER
-              </div>
-
-              <div className="future-grid">
-
-                <FutureFeature
-                  number="01"
-                  title="PR Risk Prediction"
-                  description="Predict the engineering risk of incoming changes using repository and historical signals."
-                />
-
-                <FutureFeature
-                  number="02"
-                  title="What-if Analysis"
-                  description="Understand potential change impact before modifying the codebase."
-                />
-
-                <FutureFeature
-                  number="03"
-                  title="AI Test Recommendations"
-                  description="Generate intelligent test suggestions for changed files and components."
-                />
-
-                <FutureFeature
-                  number="04"
-                  title="Hotspot Detection"
-                  description="Find complex and frequently changing areas that deserve extra attention."
-                />
-
-              </div>
-            </section>
-
-          </section>
-        )}
-      </main>
-
-      <footer className="footer">
-        <div>CodeAtlas AI</div>
-        <div>
-          Map. Understand. Predict.
-        </div>
-      </footer>
-    </div>
-  );
+  if (
+    normalized.includes("javascript")
+  ) {
+    return "🟨";
+  }
+
+  if (
+    normalized.includes("typescript")
+  ) {
+    return "🔷";
+  }
+
+  if (normalized.includes("java")) {
+    return "☕";
+  }
+
+  if (normalized.includes("c++")) {
+    return "⚙️";
+  }
+
+  if (normalized.includes("c#")) {
+    return "🔷";
+  }
+
+  if (normalized.includes("go")) {
+    return "🐹";
+  }
+
+  if (normalized.includes("rust")) {
+    return "🦀";
+  }
+
+  return "📄";
 }
 
-/*
- * -----------------------------------------------------------
- * COMPONENTS
- * -----------------------------------------------------------
- */
+function normalizeGraphType(
+  type: string
+): "File" | "Class" | "Function" | "Unknown" {
+  const normalized =
+    type.toLowerCase();
 
-function getFileSymbol(language: string) {
-  const symbols: Record<string, string> = {
-    Python: "PY",
-    JavaScript: "JS",
-    TypeScript: "TS",
-    Java: "JV",
-    Go: "GO",
-    Rust: "RS",
-    "C++": "C+",
-    "C#": "C#",
-    Ruby: "RB",
-    PHP: "PHP",
-    Kotlin: "KT",
-    Swift: "SW",
-  };
+  if (normalized === "file") {
+    return "File";
+  }
 
-  return symbols[language] || "FILE";
+  if (normalized === "class") {
+    return "Class";
+  }
+
+  if (normalized === "function") {
+    return "Function";
+  }
+
+  return "Unknown";
 }
 
-function FeatureCard({
-  number,
-  title,
-  description,
-}: {
-  number: string;
-  title: string;
-  description: string;
-}) {
-  return (
-    <article className="feature-card">
-      <div className="feature-number">
-        {number}
-      </div>
+function formatGraphPropertyValue(
+  value: unknown
+): string {
+  if (value === null || value === undefined) {
+    return "—";
+  }
 
-      <h3>{title}</h3>
+  if (typeof value === "string") {
+    return value;
+  }
 
-      <p>{description}</p>
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
 
-      <div className="feature-line" />
-    </article>
-  );
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
-function Step({
-  number,
-  title,
-  description,
-}: {
-  number: string;
-  title: string;
-  description: string;
-}) {
-  return (
-    <article className="step">
-      <div className="step-number">
-        {number}
-      </div>
+function getNodeColor(
+  type: string
+): string {
+  switch (
+    normalizeGraphType(type)
+  ) {
+    case "File":
+      return "#a78bfa";
 
-      <h3>{title}</h3>
+    case "Class":
+      return "#38bdf8";
 
-      <p>{description}</p>
-    </article>
-  );
+    case "Function":
+      return "#34d399";
+
+    default:
+      return "#94a3b8";
+  }
+}
+
+function getRelationshipColor(
+  relationship: string
+): string {
+  switch (relationship) {
+    case "CALLS":
+      return "#34d399";
+
+    case "IMPORTS":
+      return "#a78bfa";
+
+    case "CONTAINS":
+      return "#38bdf8";
+
+    default:
+      return "#64748b";
+  }
 }
 
 function Stat({
   label,
   value,
-  subtitle,
 }: {
   label: string;
-  value: string;
-  subtitle?: string;
+  value: string | number;
 }) {
   return (
-    <div className="stat-card">
-      <div className="stat-label">
+    <div className="stat">
+      <span className="stat-label">
         {label}
-      </div>
+      </span>
 
-      <div className="stat-value">
-        {value}
-      </div>
-
-      {subtitle && (
-        <div className="stat-subtitle">
-          {subtitle}
-        </div>
-      )}
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -1422,7 +256,7 @@ function OverviewMetric({
   value,
 }: {
   label: string;
-  value: string;
+  value: string | number;
 }) {
   return (
     <div className="overview-metric">
@@ -1443,13 +277,2859 @@ function FutureFeature({
   description: string;
 }) {
   return (
-    <article className="future-feature">
-      <span>{number}</span>
+    <div className="future-feature">
+      <div className="future-number">
+        {number}
+      </div>
 
-      <h3>{title}</h3>
+      <h4>{title}</h4>
 
       <p>{description}</p>
-    </article>
+    </div>
+  );
+}
+
+function Step({
+  number,
+  title,
+  description,
+}: {
+  number: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="step">
+      <div className="step-number">
+        {number}
+      </div>
+
+      <div>
+        <h4>{title}</h4>
+
+        <p>{description}</p>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [repoUrl, setRepoUrl] =
+    useState(
+      "https://github.com/psf/requests"
+    );
+
+  const [branch, setBranch] =
+    useState("");
+
+  const [result, setResult] =
+    useState<AnalysisResult>(
+      EMPTY_RESULT
+    );
+
+  const [loading, setLoading] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+  const [activeTab, setActiveTab] =
+    useState<
+      "overview" | "explorer" | "graph"
+    >("overview");
+
+  const [search, setSearch] =
+    useState("");
+
+  const [languageFilter, setLanguageFilter] =
+    useState("all");
+
+  const [sortBy, setSortBy] =
+    useState<"path" | "loc">(
+      "path"
+    );
+
+  const [selectedFile, setSelectedFile] =
+    useState<FileInfo | null>(
+      null
+    );
+
+  /*
+   * ================================
+   * GRAPH STATE
+   * ================================
+   */
+
+  const [graphLoading, setGraphLoading] =
+    useState(false);
+
+  const [graphError, setGraphError] =
+    useState("");
+
+  const [graphNodes, setGraphNodes] =
+    useState<GraphNode[]>([]);
+
+  const [graphEdges, setGraphEdges] =
+    useState<GraphEdge[]>([]);
+
+  const [graphFilter, setGraphFilter] =
+    useState("all");
+
+  const [graphSearch, setGraphSearch] =
+    useState("");
+
+  const [
+    relationshipFilter,
+    setRelationshipFilter,
+  ] = useState("all");
+
+  const [
+    selectedGraphNodeId,
+    setSelectedGraphNodeId,
+  ] = useState<string | null>(
+    null
+  );
+
+  const [
+    focusSelection,
+    setFocusSelection,
+  ] = useState(false);
+
+  /*
+   * ================================
+   * REPOSITORY ANALYSIS
+   * ================================
+   */
+
+  const analyzeRepository =
+    async () => {
+      if (!repoUrl.trim()) {
+        setError(
+          "Please enter a GitHub repository URL."
+        );
+
+        return;
+      }
+
+      setLoading(true);
+      setError("");
+
+      setSelectedFile(null);
+
+      setGraphNodes([]);
+      setGraphEdges([]);
+
+      setSelectedGraphNodeId(
+        null
+      );
+
+      setFocusSelection(false);
+
+      setGraphError("");
+
+      try {
+        const response =
+          await fetch(
+            "http://127.0.0.1:8000/api/repositories/analyze",
+            {
+              method: "POST",
+
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+
+              body: JSON.stringify({
+                url: repoUrl.trim(),
+
+                branch:
+                  branch.trim() ||
+                  undefined,
+              }),
+            }
+          );
+
+        if (!response.ok) {
+          const text =
+            await response.text();
+
+          throw new Error(
+            text ||
+              `Request failed with ${response.status}`
+          );
+        }
+
+        const data =
+          await response.json();
+
+        const rawFiles =
+          data?.analysis?.files ??
+          data?.files ??
+          [];
+
+        const normalizedFiles: FileInfo[] =
+          Array.isArray(rawFiles)
+            ? rawFiles
+                .map(
+                  (file: any) => ({
+                    path: normalizePath(
+                      file?.path
+                    ),
+
+                    language:
+                      typeof file?.language ===
+                      "string"
+                        ? file.language
+                        : "unknown",
+
+                    loc: Number(
+                      file?.loc || 0
+                    ),
+                  })
+                )
+
+                .filter(
+                  (file: FileInfo) =>
+                    file.path.length >
+                    0
+                )
+            : [];
+
+        const normalizedResult:
+          AnalysisResult = {
+          repository:
+            typeof data?.repository ===
+            "string"
+              ? data.repository
+              : "",
+
+          url:
+            typeof data?.url ===
+            "string"
+              ? data.url
+              : repoUrl.trim(),
+
+          status: data?.status,
+
+          repository_id:
+            data?.repository_id,
+
+          analysis: {
+            ...data?.analysis,
+
+            files:
+              normalizedFiles,
+
+            file_count: Number(
+              data?.analysis
+                ?.file_count ??
+                normalizedFiles.length
+            ),
+
+            loc: Number(
+              data?.analysis?.loc ??
+                normalizedFiles.reduce(
+                  (
+                    sum,
+                    file
+                  ) =>
+                    sum + file.loc,
+                  0
+                )
+            ),
+
+            languages:
+              data?.analysis
+                ?.languages ?? {},
+          },
+        };
+
+        setResult(
+          normalizedResult
+        );
+
+        setActiveTab(
+          "overview"
+        );
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to analyze repository."
+        );
+      } finally {
+        setLoading(false);
+      }
+    };
+
+  /*
+   * ================================
+   * GRAPH LOADING
+   * ================================
+   */
+
+  const loadGraph = async () => {
+    const repository =
+      result.repository?.trim();
+
+    if (!repository) {
+      setGraphError(
+        "Analyze a repository first."
+      );
+
+      return;
+    }
+
+    setGraphLoading(true);
+    setGraphError("");
+
+    try {
+      const response =
+        await fetch(
+          `http://127.0.0.1:8000/api/graph?repository=${encodeURIComponent(
+            repository
+          )}&limit=1000&offset=0`
+        );
+
+      if (!response.ok) {
+        const text =
+          await response.text();
+
+        throw new Error(
+          text ||
+            `Graph request failed with ${response.status}`
+        );
+      }
+
+      const data =
+        await response.json();
+
+      const nodes: GraphNode[] =
+        Array.isArray(data?.nodes)
+          ? data.nodes
+              .map(
+                (node: any) => ({
+                  id: String(
+                    node?.id ?? ""
+                  ),
+
+                  label: String(
+                    node?.label ??
+                      node?.name ??
+                      node?.id ??
+                      ""
+                  ),
+
+                  type: String(
+                    node?.type ??
+                      "Unknown"
+                  ),
+
+                  name:
+                    node?.name != null
+                      ? String(
+                          node.name
+                        )
+                      : undefined,
+
+                  path:
+                    node?.path != null
+                      ? String(
+                          node.path
+                        )
+                      : undefined,
+
+                  file_path:
+                    node?.file_path !=
+                    null
+                      ? String(
+                          node.file_path
+                        )
+                      : undefined,
+
+                  language:
+                    node?.language !=
+                    null
+                      ? String(
+                          node.language
+                        )
+                      : undefined,
+
+                  loc:
+                    node?.loc != null
+                      ? Number(
+                          node.loc
+                        )
+                      : undefined,
+
+                  repository:
+                    node?.repository !=
+                    null
+                      ? String(
+                          node.repository
+                        )
+                      : repository,
+
+                  risk:
+                    node?.risk != null
+                      ? node.risk
+                      : undefined,
+
+                  risk_label:
+                    node?.risk_label !=
+                    null
+                      ? String(
+                          node.risk_label
+                        )
+                      : undefined,
+
+                  risk_confidence:
+                    node?.risk_confidence !=
+                    null
+                      ? node.risk_confidence
+                      : undefined,
+
+                  properties:
+                    node?.properties &&
+                    typeof node.properties ===
+                      "object"
+                      ? node.properties
+                      : {},
+                })
+              )
+
+              .filter(
+                (node: GraphNode) =>
+                  node.id.length >
+                  0
+              )
+          : [];
+
+      const edges: GraphEdge[] =
+        Array.isArray(data?.edges)
+          ? data.edges
+              .map(
+                (
+                  edge: any,
+                  index: number
+                ) => ({
+                  id:
+                    edge?.id ??
+                    `${edge?.source}-${edge?.target}-${index}`,
+
+                  source: String(
+                    edge?.source ?? ""
+                  ),
+
+                  target: String(
+                    edge?.target ?? ""
+                  ),
+
+                  relationship: String(
+                    edge?.relationship ??
+                      "RELATED"
+                  ),
+                })
+              )
+
+              .filter(
+                (edge: GraphEdge) =>
+                  edge.source.length >
+                    0 &&
+                  edge.target.length >
+                    0
+              )
+          : [];
+
+      setGraphNodes(nodes);
+      setGraphEdges(edges);
+
+      setSelectedGraphNodeId(
+        null
+      );
+
+      setFocusSelection(false);
+    } catch (err) {
+      setGraphError(
+        err instanceof Error
+          ? err.message
+          : "Failed to load dependency graph."
+      );
+    } finally {
+      setGraphLoading(false);
+    }
+  };
+
+  /*
+   * ================================
+   * FILE DATA
+   * ================================
+   */
+
+  const files = useMemo(() => {
+    const rawFiles =
+      result.analysis?.files ??
+      [];
+
+    let filtered =
+      rawFiles.filter(
+        (file) => {
+          const matchesSearch =
+            !search.trim() ||
+            file.path
+              .toLowerCase()
+              .includes(
+                search
+                  .trim()
+                  .toLowerCase()
+              );
+
+          const matchesLanguage =
+            languageFilter ===
+              "all" ||
+            file.language
+              .toLowerCase() ===
+              languageFilter.toLowerCase();
+
+          return (
+            matchesSearch &&
+            matchesLanguage
+          );
+        }
+      );
+
+    filtered = [
+      ...filtered,
+    ].sort((a, b) => {
+      if (sortBy === "loc") {
+        return b.loc - a.loc;
+      }
+
+      return a.path.localeCompare(
+        b.path
+      );
+    });
+
+    return filtered;
+  }, [
+    result.analysis?.files,
+    search,
+    languageFilter,
+    sortBy,
+  ]);
+
+  const languages = useMemo(() => {
+    const source =
+      result.analysis?.languages ??
+      {};
+
+    if (
+      Object.keys(source).length >
+      0
+    ) {
+      return source;
+    }
+
+    const counts: Record<
+      string,
+      number
+    > = {};
+
+    for (const file of
+      result.analysis?.files ??
+      []) {
+      counts[file.language] =
+        (counts[file.language] ||
+          0) + 1;
+    }
+
+    return counts;
+  }, [
+    result.analysis?.languages,
+    result.analysis?.files,
+  ]);
+
+  const testFiles = useMemo(
+    () =>
+      (
+        result.analysis?.files ??
+        []
+      ).filter((file) =>
+        isTestFile(file.path)
+      ),
+    [result.analysis?.files]
+  );
+
+  const testLoc = useMemo(
+    () =>
+      testFiles.reduce(
+        (sum, file) =>
+          sum + file.loc,
+        0
+      ),
+    [testFiles]
+  );
+
+  const largestFile = useMemo(
+    () => {
+      const allFiles =
+        result.analysis?.files ??
+        [];
+
+      if (
+        allFiles.length === 0
+      ) {
+        return null;
+      }
+
+      return [
+        ...allFiles,
+      ].sort(
+        (a, b) => b.loc - a.loc
+      )[0];
+    },
+    [result.analysis?.files]
+  );
+
+  const languageOptions =
+    useMemo(
+      () =>
+        Object.keys(
+          languages
+        ).sort((a, b) =>
+          a.localeCompare(b)
+        ),
+      [languages]
+    );
+
+  /*
+   * ================================
+   * GRAPH LOOKUPS
+   * ================================
+   */
+
+  const graphNodeMap = useMemo(
+    () => {
+      const map =
+        new Map<
+          string,
+          GraphNode
+        >();
+
+      for (const node of
+        graphNodes) {
+        map.set(
+          node.id,
+          node
+        );
+      }
+
+      return map;
+    },
+    [graphNodes]
+  );
+
+  const selectedGraphNode =
+    selectedGraphNodeId
+      ? graphNodeMap.get(
+          selectedGraphNodeId
+        ) ?? null
+      : null;
+
+  /*
+   * ================================
+   * GRAPH FILTERING
+   * ================================
+   */
+
+  const filteredGraphNodes =
+    useMemo(() => {
+      return graphNodes.filter(
+        (node) => {
+          const nodeType =
+            normalizeGraphType(
+              node.type
+            );
+
+          const typeMatches =
+            graphFilter ===
+              "all" ||
+            nodeType ===
+              graphFilter;
+
+          const searchMatches =
+            !graphSearch.trim() ||
+            node.label
+              .toLowerCase()
+              .includes(
+                graphSearch
+                  .trim()
+                  .toLowerCase()
+              ) ||
+            node.id
+              .toLowerCase()
+              .includes(
+                graphSearch
+                  .trim()
+                  .toLowerCase()
+              );
+
+          return (
+            typeMatches &&
+            searchMatches
+          );
+        }
+      );
+    }, [
+      graphNodes,
+      graphFilter,
+      graphSearch,
+    ]);
+
+  /*
+   * ================================
+   * GRAPH RELATIONSHIP FILTER
+   * ================================
+   */
+
+  const relationshipFilteredEdges =
+    useMemo(() => {
+      return graphEdges.filter(
+        (edge) =>
+          relationshipFilter ===
+            "all" ||
+          edge.relationship ===
+            relationshipFilter
+      );
+    }, [
+      graphEdges,
+      relationshipFilter,
+    ]);
+
+  /*
+   * ================================
+   * FOCUS MODE
+   * ================================
+   *
+   * When a node is selected and Focus
+   * Selection is enabled, only the
+   * selected node and its immediate
+   * Neo4j relationships are displayed.
+   */
+
+  const focusNodeIds = useMemo(() => {
+    if (
+      !selectedGraphNodeId
+    ) {
+      return new Set<string>();
+    }
+
+    const ids =
+      new Set<string>();
+
+    ids.add(
+      selectedGraphNodeId
+    );
+
+    for (const edge of
+      relationshipFilteredEdges) {
+      if (
+        edge.source ===
+        selectedGraphNodeId
+      ) {
+        ids.add(edge.target);
+      }
+
+      if (
+        edge.target ===
+        selectedGraphNodeId
+      ) {
+        ids.add(edge.source);
+      }
+    }
+
+    return ids;
+  }, [
+    selectedGraphNodeId,
+    relationshipFilteredEdges,
+  ]);
+
+  const displayGraphNodes =
+    useMemo(() => {
+      if (
+        focusSelection &&
+        selectedGraphNodeId
+      ) {
+        return graphNodes.filter(
+          (node) =>
+            focusNodeIds.has(
+              node.id
+            )
+        );
+      }
+
+      return filteredGraphNodes;
+    }, [
+      graphNodes,
+      filteredGraphNodes,
+      focusSelection,
+      selectedGraphNodeId,
+      focusNodeIds,
+    ]);
+
+  const displayGraphNodeIds =
+    useMemo(
+      () =>
+        new Set(
+          displayGraphNodes.map(
+            (node) => node.id
+          )
+        ),
+      [displayGraphNodes]
+    );
+
+  const displayGraphEdges =
+    useMemo(() => {
+      return relationshipFilteredEdges.filter(
+        (edge) =>
+          displayGraphNodeIds.has(
+            edge.source
+          ) &&
+          displayGraphNodeIds.has(
+            edge.target
+          )
+      );
+    }, [
+      relationshipFilteredEdges,
+      displayGraphNodeIds,
+    ]);
+
+  /*
+   * ================================
+   * REACT FLOW NODES
+   * ================================
+   */
+
+  const flowNodes: Node[] =
+    useMemo(() => {
+      const columns = 5;
+
+      return displayGraphNodes.map(
+        (node, index) => {
+          const column =
+            index % columns;
+
+          const row = Math.floor(
+            index / columns
+          );
+
+          const nodeType =
+            normalizeGraphType(
+              node.type
+            );
+
+          const color =
+            getNodeColor(
+              node.type
+            );
+
+          const isSelected =
+            node.id ===
+            selectedGraphNodeId;
+
+          const isConnected =
+            selectedGraphNodeId
+              ? displayGraphEdges.some(
+                  (edge) =>
+                    edge.source ===
+                      node.id ||
+                    edge.target ===
+                      node.id
+                )
+              : true;
+
+          const opacity =
+            selectedGraphNodeId &&
+            !isSelected &&
+            !isConnected
+              ? 0.3
+              : 1;
+
+          return {
+            id: node.id,
+
+            position: {
+              x:
+                column * 270,
+              y:
+                row * 145,
+            },
+
+            draggable: true,
+
+            style: {
+              background:
+                "transparent",
+
+              border: "none",
+
+              padding: 0,
+
+              width: 190,
+
+              opacity,
+            },
+
+            data: {
+              type: nodeType,
+
+              label: (
+                <div
+                  style={{
+                    width: 190,
+                    minHeight: 86,
+
+                    padding:
+                      "12px 14px",
+
+                    border:
+                      `1.5px solid ${
+                        isSelected
+                          ? "#ffffff"
+                          : color
+                      }`,
+
+                    borderRadius: 12,
+
+                    background:
+                      "linear-gradient(145deg, #171a22, #0e1016)",
+
+                    boxShadow:
+                      isSelected
+                        ? `0 0 0 3px ${color}55, 0 0 28px ${color}55`
+                        : `0 0 14px ${color}18`,
+
+                    color: "#edf0f5",
+
+                    textAlign:
+                      "left",
+
+                    transition:
+                      "all 0.2s ease",
+                  }}
+                >
+                  <div
+                    style={{
+                      color,
+
+                      fontSize: 9,
+
+                      fontWeight: 800,
+
+                      letterSpacing:
+                        "0.12em",
+
+                      textTransform:
+                        "uppercase",
+
+                      marginBottom: 6,
+                    }}
+                  >
+                    {nodeType}
+                  </div>
+
+                  <div
+                    title={
+                      node.label
+                    }
+                    style={{
+                      fontSize: 12,
+
+                      fontWeight: 700,
+
+                      whiteSpace:
+                        "nowrap",
+
+                      overflow:
+                        "hidden",
+
+                      textOverflow:
+                        "ellipsis",
+                    }}
+                  >
+                    {node.label}
+                  </div>
+
+                  <div
+                    title={
+                      node.file_path ??
+                      node.path ??
+                      node.id
+                    }
+                    style={{
+                      marginTop: 6,
+
+                      color:
+                        "#697182",
+
+                      fontSize: 9,
+
+                      fontFamily:
+                        "Consolas, monospace",
+
+                      whiteSpace:
+                        "nowrap",
+
+                      overflow:
+                        "hidden",
+
+                      textOverflow:
+                        "ellipsis",
+                    }}
+                  >
+                    {node.file_path ??
+                      node.path ??
+                      node.id}
+                  </div>
+                </div>
+              ),
+            },
+          };
+        }
+      );
+    }, [
+      displayGraphNodes,
+      displayGraphEdges,
+      selectedGraphNodeId,
+    ]);
+
+  /*
+   * ================================
+   * REACT FLOW EDGES
+   * ================================
+   */
+
+  const flowEdges: Edge[] =
+    useMemo(() => {
+      return displayGraphEdges.map(
+        (edge, index) => {
+          const color =
+            getRelationshipColor(
+              edge.relationship
+            );
+
+          const connectedToSelected =
+            selectedGraphNodeId &&
+            (edge.source ===
+              selectedGraphNodeId ||
+              edge.target ===
+                selectedGraphNodeId);
+
+          return {
+            id:
+              edge.id ??
+              `${edge.source}-${edge.target}-${index}`,
+
+            source: edge.source,
+
+            target: edge.target,
+
+            label:
+              edge.relationship,
+
+            animated:
+              edge.relationship ===
+                "CALLS" &&
+              Boolean(
+                connectedToSelected
+              ),
+
+            style: {
+              stroke: color,
+
+              strokeWidth:
+                connectedToSelected
+                  ? 3
+                  : 1.4,
+
+              opacity:
+                selectedGraphNodeId &&
+                !connectedToSelected
+                  ? 0.18
+                  : 0.8,
+            },
+
+            labelStyle: {
+              fill: color,
+
+              fontSize:
+                connectedToSelected
+                  ? 10
+                  : 8,
+
+              fontWeight: 700,
+
+              opacity:
+                selectedGraphNodeId &&
+                !connectedToSelected
+                  ? 0.25
+                  : 0.9,
+            },
+
+            labelBgStyle: {
+              fill: "#0d1017",
+
+              fillOpacity: 0.92,
+            },
+
+            labelBgPadding: [
+              4,
+              2,
+            ] as [
+              number,
+              number
+            ],
+
+            labelBgBorderRadius: 4,
+          };
+        }
+      );
+    }, [
+      displayGraphEdges,
+      selectedGraphNodeId,
+    ]);
+
+  /*
+   * ================================
+   * GRAPH NODE CLICK
+   * ================================
+   */
+
+  const handleGraphNodeClick =
+    (
+      _event: MouseEvent,
+      node: Node
+    ) => {
+      setSelectedGraphNodeId(
+        node.id
+      );
+    };
+
+  /*
+   * ================================
+   * GRAPH PANE CLICK
+   * ================================
+   */
+
+  const handleGraphPaneClick =
+    () => {
+      setSelectedGraphNodeId(
+        null
+      );
+
+      setFocusSelection(false);
+    };
+
+  /*
+   * ================================
+   * NODE RELATIONSHIP COUNTS
+   * ================================
+   */
+
+  const selectedNodeRelationships =
+    useMemo(() => {
+      if (
+        !selectedGraphNodeId
+      ) {
+        return {
+          incoming: 0,
+          outgoing: 0,
+        };
+      }
+
+      let incoming = 0;
+      let outgoing = 0;
+
+      for (const edge of
+        graphEdges) {
+        if (
+          edge.target ===
+          selectedGraphNodeId
+        ) {
+          incoming++;
+        }
+
+        if (
+          edge.source ===
+          selectedGraphNodeId
+        ) {
+          outgoing++;
+        }
+      }
+
+      return {
+        incoming,
+        outgoing,
+      };
+    }, [
+      graphEdges,
+      selectedGraphNodeId,
+    ]);
+
+  /*
+   * ================================
+   * UI
+   * ================================
+   */
+
+  return (
+    <div className="app">
+      {/* ============================
+          TOP BAR
+      ============================= */}
+
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark">
+            CA
+          </div>
+
+          <div>
+            <h1>
+              CodeAtlas AI
+            </h1>
+
+            <span>
+              Map. Understand.
+              Predict.
+            </span>
+          </div>
+        </div>
+
+        <div className="topbar-status">
+          <span className="status-dot" />
+
+          Repository
+          Intelligence
+        </div>
+      </header>
+
+      <main className="container">
+        {/* ==========================
+            HERO
+        =========================== */}
+
+        <section className="hero">
+          <div className="hero-copy">
+            <span className="eyebrow">
+              AI SOFTWARE ENGINEERING
+              PLATFORM
+            </span>
+
+            <h2>
+              Understand your
+              codebase like a map.
+            </h2>
+
+            <p>
+              Analyze a public GitHub
+              repository, explore its
+              structure, inspect files,
+              and visualize how the
+              code is connected.
+            </p>
+          </div>
+
+          <div className="analyzer-card">
+            <label>
+              GitHub repository URL
+            </label>
+
+            <div className="input-row">
+              <input
+                value={repoUrl}
+                onChange={(
+                  event
+                ) =>
+                  setRepoUrl(
+                    event.target
+                      .value
+                  )
+                }
+                placeholder="https://github.com/owner/repository"
+              />
+
+              <button
+                onClick={
+                  analyzeRepository
+                }
+                disabled={loading}
+              >
+                {loading
+                  ? "Analyzing..."
+                  : "Analyze"}
+              </button>
+            </div>
+
+            <div className="branch-row">
+              <label>
+                Branch
+              </label>
+
+              <input
+                value={branch}
+                onChange={(
+                  event
+                ) =>
+                  setBranch(
+                    event.target
+                      .value
+                  )
+                }
+                placeholder="Optional — e.g. main"
+              />
+            </div>
+
+            {error && (
+              <div className="error">
+                {error}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* ==========================
+            ANALYZED REPOSITORY
+        =========================== */}
+
+        {result.repository && (
+          <>
+            <section className="repo-header">
+              <div>
+                <span className="eyebrow">
+                  ANALYZED REPOSITORY
+                </span>
+
+                <h2>
+                  {result.repository}
+                </h2>
+
+                <p>
+                  {result.url}
+                </p>
+              </div>
+
+              <div className="repo-status">
+                <span className="status-dot" />
+
+                Analysis completed
+              </div>
+            </section>
+
+            {/* ========================
+                TABS
+            ========================= */}
+
+            <nav className="tabs">
+              <button
+                className={
+                  activeTab ===
+                  "overview"
+                    ? "active"
+                    : ""
+                }
+                onClick={() =>
+                  setActiveTab(
+                    "overview"
+                  )
+                }
+              >
+                Overview
+              </button>
+
+              <button
+                className={
+                  activeTab ===
+                  "explorer"
+                    ? "active"
+                    : ""
+                }
+                onClick={() =>
+                  setActiveTab(
+                    "explorer"
+                  )
+                }
+              >
+                Code Explorer
+              </button>
+
+              <button
+                className={
+                  activeTab ===
+                  "graph"
+                    ? "active"
+                    : ""
+                }
+                onClick={() => {
+                  setActiveTab(
+                    "graph"
+                  );
+
+                  if (
+                    graphNodes.length ===
+                    0
+                  ) {
+                    loadGraph();
+                  }
+                }}
+              >
+                Dependency Graph
+              </button>
+            </nav>
+
+            {/* ========================
+                OVERVIEW
+            ========================= */}
+
+            {activeTab ===
+              "overview" && (
+              <section>
+                <div className="section-heading">
+                  <div>
+                    <span className="eyebrow">
+                      REPOSITORY OVERVIEW
+                    </span>
+
+                    <h2>
+                      Codebase at a
+                      glance
+                    </h2>
+                  </div>
+                </div>
+
+                <div className="metrics-grid">
+                  <OverviewMetric
+                    label="Files"
+                    value={formatNumber(
+                      result
+                        .analysis
+                        ?.file_count
+                    )}
+                  />
+
+                  <OverviewMetric
+                    label="Lines of Code"
+                    value={formatNumber(
+                      result
+                        .analysis?.loc
+                    )}
+                  />
+
+                  <OverviewMetric
+                    label="Languages"
+                    value={formatNumber(
+                      Object.keys(
+                        languages
+                      ).length
+                    )}
+                  />
+
+                  <OverviewMetric
+                    label="Test Files"
+                    value={formatNumber(
+                      testFiles.length
+                    )}
+                  />
+                </div>
+
+                <div className="overview-grid">
+                  <div className="panel">
+                    <div className="panel-header">
+                      <span className="eyebrow">
+                        LANGUAGES
+                      </span>
+
+                      <h3>
+                        Language
+                        distribution
+                      </h3>
+                    </div>
+
+                    <div className="language-list">
+                      {Object.entries(
+                        languages
+                      )
+                        .sort(
+                          (
+                            [, a],
+                            [, b]
+                          ) =>
+                            b - a
+                        )
+                        .map(
+                          ([
+                            language,
+                            count,
+                          ]) => (
+                            <div
+                              className="language-row"
+                              key={
+                                language
+                              }
+                            >
+                              <div className="language-name">
+                                <span>
+                                  {getFileSymbol(
+                                    language
+                                  )}
+                                </span>
+
+                                {
+                                  language
+                                }
+                              </div>
+
+                              <strong>
+                                {formatNumber(
+                                  count
+                                )}
+                              </strong>
+                            </div>
+                          )
+                        )}
+                    </div>
+                  </div>
+
+                  <div className="panel">
+                    <div className="panel-header">
+                      <span className="eyebrow">
+                        TEST COVERAGE
+                      </span>
+
+                      <h3>
+                        Test code
+                      </h3>
+                    </div>
+
+                    <div className="stats">
+                      <Stat
+                        label="Test files"
+                        value={formatNumber(
+                          testFiles.length
+                        )}
+                      />
+
+                      <Stat
+                        label="Test LOC"
+                        value={formatNumber(
+                          testLoc
+                        )}
+                      />
+
+                      <Stat
+                        label="Largest file"
+                        value={
+                          largestFile
+                            ?.path ||
+                          "—"
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="section-heading future-heading">
+                  <div>
+                    <span className="eyebrow">
+                      CODE INTELLIGENCE
+                    </span>
+
+                    <h2>
+                      What CodeAtlas
+                      will understand
+                    </h2>
+                  </div>
+                </div>
+
+                <div className="future-grid">
+                  <FutureFeature
+                    number="01"
+                    title="PR Risk Prediction"
+                    description="Predict the risk of a pull request using repository history and code-change signals."
+                  />
+
+                  <FutureFeature
+                    number="02"
+                    title="What-if Analysis"
+                    description="Explore which parts of the system may be affected before changing a file."
+                  />
+
+                  <FutureFeature
+                    number="03"
+                    title="AI Test Recommendations"
+                    description="Recommend tests based on the code being changed and its dependency relationships."
+                  />
+
+                  <FutureFeature
+                    number="04"
+                    title="Hotspot Detection"
+                    description="Identify files that combine high change activity with structural complexity."
+                  />
+                </div>
+              </section>
+            )}
+
+            {/* ========================
+                CODE EXPLORER
+            ========================= */}
+
+            {activeTab ===
+              "explorer" && (
+              <section>
+                <div className="section-heading">
+                  <div>
+                    <span className="eyebrow">
+                      CODE EXPLORER
+                    </span>
+
+                    <h2>
+                      Explore repository
+                      files
+                    </h2>
+                  </div>
+                </div>
+
+                <div className="explorer-layout">
+                  <div className="panel explorer-panel">
+                    <div className="explorer-toolbar">
+                      <input
+                        value={search}
+                        onChange={(
+                          event
+                        ) =>
+                          setSearch(
+                            event.target
+                              .value
+                          )
+                        }
+                        placeholder="Search files..."
+                      />
+
+                      <select
+                        value={
+                          languageFilter
+                        }
+                        onChange={(
+                          event
+                        ) =>
+                          setLanguageFilter(
+                            event.target
+                              .value
+                          )
+                        }
+                      >
+                        <option value="all">
+                          All languages
+                        </option>
+
+                        {languageOptions.map(
+                          (
+                            language
+                          ) => (
+                            <option
+                              key={
+                                language
+                              }
+                              value={
+                                language
+                              }
+                            >
+                              {
+                                language
+                              }
+                            </option>
+                          )
+                        )}
+                      </select>
+
+                      <select
+                        value={
+                          sortBy
+                        }
+                        onChange={(
+                          event
+                        ) =>
+                          setSortBy(
+                            event.target
+                              .value as
+                              | "path"
+                              | "loc"
+                          )
+                        }
+                      >
+                        <option value="path">
+                          Sort by path
+                        </option>
+
+                        <option value="loc">
+                          Sort by LOC
+                        </option>
+                      </select>
+                    </div>
+
+                    <div className="file-list">
+                      {files.map(
+                        (file) => (
+                          <button
+                            className={`file-row ${
+                              selectedFile?.path ===
+                              file.path
+                                ? "selected"
+                                : ""
+                            }`}
+                            key={
+                              file.path
+                            }
+                            onClick={() =>
+                              setSelectedFile(
+                                file
+                              )
+                            }
+                          >
+                            <span className="file-icon">
+                              {getFileSymbol(
+                                file.language
+                              )}
+                            </span>
+
+                            <span className="file-path">
+                              {
+                                file.path
+                              }
+                            </span>
+
+                            <span className="file-language">
+                              {
+                                file.language
+                              }
+                            </span>
+
+                            <span className="file-loc">
+                              {formatNumber(
+                                file.loc
+                              )}{" "}
+                              LOC
+                            </span>
+                          </button>
+                        )
+                      )}
+
+                      {files.length ===
+                        0 && (
+                        <div className="empty-state">
+                          No files match
+                          your filters.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="panel file-details">
+                    {selectedFile ? (
+                      <>
+                        <span className="eyebrow">
+                          FILE DETAILS
+                        </span>
+
+                        <h3>
+                          {
+                            selectedFile.path
+                          }
+                        </h3>
+
+                        <div className="detail-grid">
+                          <Stat
+                            label="Language"
+                            value={
+                              selectedFile.language
+                            }
+                          />
+
+                          <Stat
+                            label="Lines of code"
+                            value={formatNumber(
+                              selectedFile.loc
+                            )}
+                          />
+
+                          <Stat
+                            label="Test file"
+                            value={
+                              isTestFile(
+                                selectedFile.path
+                              )
+                                ? "Yes"
+                                : "No"
+                            }
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <div className="empty-state">
+                        Select a file to
+                        inspect its
+                        details.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* ========================
+                DEPENDENCY GRAPH
+            ========================= */}
+
+            {activeTab ===
+              "graph" && (
+              <section>
+                <div className="section-heading">
+                  <div>
+                    <span className="eyebrow">
+                      NEO4J CODE KNOWLEDGE GRAPH
+                    </span>
+
+                    <h2>
+                      Dependency Graph
+                    </h2>
+
+                    <p>
+                      Explore the
+                      repository knowledge
+                      graph generated from
+                      your codebase.
+                    </p>
+                  </div>
+
+                  <button
+                    className="secondary-button"
+                    onClick={
+                      loadGraph
+                    }
+                    disabled={
+                      graphLoading
+                    }
+                  >
+                    {graphLoading
+                      ? "Loading..."
+                      : "Refresh Graph"}
+                  </button>
+                </div>
+
+                {graphError && (
+                  <div className="error">
+                    {graphError}
+                  </div>
+                )}
+
+                {/* GRAPH TOOLBAR */}
+
+                <div
+                  className="graph-toolbar"
+                  style={{
+                    display:
+                      "grid",
+
+                    gridTemplateColumns:
+                      "minmax(260px, 1fr) 160px 160px auto",
+
+                    gap: 10,
+
+                    alignItems:
+                      "center",
+
+                    marginBottom: 14,
+                  }}
+                >
+                  <input
+                    value={
+                      graphSearch
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setGraphSearch(
+                        event.target
+                          .value
+                      )
+                    }
+                    placeholder="Search files, classes, or functions..."
+                  />
+
+                  <select
+                    value={
+                      graphFilter
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setGraphFilter(
+                        event.target
+                          .value
+                      )
+                    }
+                  >
+                    <option value="all">
+                      All node types
+                    </option>
+
+                    <option value="File">
+                      Files
+                    </option>
+
+                    <option value="Class">
+                      Classes
+                    </option>
+
+                    <option value="Function">
+                      Functions
+                    </option>
+                  </select>
+
+                  <select
+                    value={
+                      relationshipFilter
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setRelationshipFilter(
+                        event.target
+                          .value
+                      )
+                    }
+                  >
+                    <option value="all">
+                      All relationships
+                    </option>
+
+                    <option value="CONTAINS">
+                      Contains
+                    </option>
+
+                    <option value="IMPORTS">
+                      Imports
+                    </option>
+
+                    <option value="CALLS">
+                      Calls
+                    </option>
+                  </select>
+
+                  <div
+                    className="graph-count"
+                    style={{
+                      whiteSpace:
+                        "nowrap",
+                    }}
+                  >
+                    {
+                      displayGraphNodes.length
+                    }{" "}
+                    nodes ·{" "}
+                    {
+                      displayGraphEdges.length
+                    }{" "}
+                    relationships
+                  </div>
+                </div>
+
+                {/* GRAPH ACTION BAR */}
+
+                <div
+                  style={{
+                    display:
+                      "flex",
+
+                    alignItems:
+                      "center",
+
+                    justifyContent:
+                      "space-between",
+
+                    gap: 12,
+
+                    marginBottom: 12,
+                  }}
+                >
+                  <div
+                    style={{
+                      display:
+                        "flex",
+
+                      gap: 8,
+
+                      alignItems:
+                        "center",
+                    }}
+                  >
+                    <span
+                      style={{
+                        color:
+                          "#737a8b",
+
+                        fontSize: 12,
+                      }}
+                    >
+                      Graph source:
+                    </span>
+
+                    <span
+                      style={{
+                        color:
+                          "#c7cbd5",
+
+                        fontSize: 12,
+
+                        fontFamily:
+                          "Consolas, monospace",
+                      }}
+                    >
+                      Neo4j Aura
+                    </span>
+
+                    <span
+                      style={{
+                        width: 6,
+                        height: 6,
+
+                        borderRadius:
+                          "50%",
+
+                        background:
+                          "#34d399",
+
+                        boxShadow:
+                          "0 0 10px #34d399",
+                      }}
+                    />
+                  </div>
+
+                  <div
+                    style={{
+                      display:
+                        "flex",
+
+                      gap: 8,
+                    }}
+                  >
+                    {selectedGraphNode && (
+                      <button
+                        className="secondary-button"
+                        onClick={() =>
+                          setFocusSelection(
+                            (
+                              current
+                            ) =>
+                              !current
+                          )
+                        }
+                        style={{
+                          padding:
+                            "9px 14px",
+
+                          fontSize: 12,
+                        }}
+                      >
+                        {focusSelection
+                          ? "Show Full Graph"
+                          : "Focus Selection"}
+                      </button>
+                    )}
+
+                    {selectedGraphNode && (
+                      <button
+                        className="secondary-button"
+                        onClick={() => {
+                          setSelectedGraphNodeId(
+                            null
+                          );
+
+                          setFocusSelection(
+                            false
+                          );
+                        }}
+                        style={{
+                          padding:
+                            "9px 14px",
+
+                          fontSize: 12,
+
+                          background:
+                            "#171a22",
+
+                          boxShadow:
+                            "none",
+                        }}
+                      >
+                        Clear Selection
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* GRAPH + NODE DETAILS */}
+
+                <div
+                  style={{
+                    display:
+                      "grid",
+
+                    gridTemplateColumns:
+                      selectedGraphNode
+                        ? "minmax(0, 1fr) 340px"
+                        : "minmax(0, 1fr)",
+
+                    gap: 14,
+
+                    alignItems:
+                      "stretch",
+                  }}
+                >
+                  {/* GRAPH */}
+
+                  <div
+                    className="graph-panel"
+                    style={{
+                      height: 700,
+
+                      minWidth: 0,
+                    }}
+                  >
+                    {graphLoading &&
+                      graphNodes.length ===
+                        0 && (
+                        <div className="graph-loading">
+                          Loading Neo4j
+                          knowledge
+                          graph...
+                        </div>
+                      )}
+
+                    {!graphLoading &&
+                      graphNodes.length ===
+                        0 &&
+                      !graphError && (
+                        <div className="graph-empty">
+                          <h3>
+                            No graph loaded
+                          </h3>
+
+                          <p>
+                            Click{" "}
+                            <strong>
+                              Refresh Graph
+                            </strong>{" "}
+                            to load the
+                            repository
+                            knowledge
+                            graph.
+                          </p>
+                        </div>
+                      )}
+
+                    {graphNodes.length >
+                      0 && (
+                      <ReactFlow
+                        nodes={
+                          flowNodes
+                        }
+                        edges={
+                          flowEdges
+                        }
+                        fitView
+                        fitViewOptions={{
+                          padding: 0.18,
+                          minZoom: 0.25,
+                          maxZoom: 1.2,
+                        }}
+                        minZoom={0.1}
+                        maxZoom={2.5}
+                        nodesDraggable
+                        nodesConnectable={
+                          false
+                        }
+                        elementsSelectable
+                        onNodeClick={
+                          handleGraphNodeClick
+                        }
+                        onPaneClick={
+                          handleGraphPaneClick
+                        }
+                      >
+                        <Background
+                          gap={22}
+                          size={1}
+                        />
+
+                        <Controls />
+
+                        <MiniMap
+                          pannable
+                          zoomable
+                          nodeColor={(
+                            node
+                          ) =>
+                            getNodeColor(
+                              String(
+                                node.data
+                                  ?.type ??
+                                  "File"
+                              )
+                            )
+                          }
+                        />
+                      </ReactFlow>
+                    )}
+                  </div>
+
+                  {/* NODE DETAILS */}
+
+                  {selectedGraphNode && (
+                    <aside
+                      style={{
+                        height: 700,
+
+                        overflowY:
+                          "auto",
+
+                        border:
+                          "1px solid #272b37",
+
+                        borderRadius: 18,
+
+                        background:
+                          "linear-gradient(145deg, #12151b, #0c0e13)",
+
+                        boxShadow:
+                          "0 20px 60px rgba(0,0,0,.28)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          padding:
+                            "20px 20px 16px",
+
+                          borderBottom:
+                            "1px solid #242833",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display:
+                              "flex",
+
+                            alignItems:
+                              "center",
+
+                            justifyContent:
+                              "space-between",
+
+                            gap: 10,
+                          }}
+                        >
+                          <div>
+                            <div
+                              style={{
+                                color:
+                                  getNodeColor(
+                                    selectedGraphNode.type
+                                  ),
+
+                                fontSize: 10,
+
+                                fontWeight:
+                                  800,
+
+                                letterSpacing:
+                                  "0.12em",
+
+                                textTransform:
+                                  "uppercase",
+                              }}
+                            >
+                              {normalizeGraphType(
+                                selectedGraphNode.type
+                              )}
+                            </div>
+
+                            <h3
+                              style={{
+                                margin:
+                                  "7px 0 0",
+
+                                color:
+                                  "#edf0f5",
+
+                                fontSize: 18,
+
+                                lineHeight:
+                                  1.3,
+
+                                wordBreak:
+                                  "break-word",
+                              }}
+                            >
+                              {
+                                selectedGraphNode.name ??
+                                selectedGraphNode.label
+                              }
+                            </h3>
+                          </div>
+
+                          <button
+                            onClick={() =>
+                              setSelectedGraphNodeId(
+                                null
+                              )
+                            }
+                            style={{
+                              width: 32,
+                              height: 32,
+
+                              border:
+                                "1px solid #303542",
+
+                              borderRadius:
+                                8,
+
+                              background:
+                                "#171a22",
+
+                              color:
+                                "#9da4b3",
+
+                              cursor:
+                                "pointer",
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          padding: 20,
+                        }}
+                      >
+                        <div
+                          style={{
+                            display:
+                              "grid",
+
+                            gap: 14,
+                          }}
+                        >
+                          {/* TYPE */}
+
+                          <div>
+                            <div
+                              style={{
+                                color:
+                                  "#686f80",
+
+                                fontSize: 10,
+
+                                textTransform:
+                                  "uppercase",
+
+                                letterSpacing:
+                                  "0.08em",
+
+                                marginBottom:
+                                  5,
+                              }}
+                            >
+                              Type
+                            </div>
+
+                            <div
+                              style={{
+                                color:
+                                  getNodeColor(
+                                    selectedGraphNode.type
+                                  ),
+
+                                fontWeight:
+                                  700,
+
+                                fontSize: 13,
+                              }}
+                            >
+                              {normalizeGraphType(
+                                selectedGraphNode.type
+                              )}
+                            </div>
+                          </div>
+
+                          {/* ID */}
+
+                          <div>
+                            <div
+                              style={{
+                                color:
+                                  "#686f80",
+
+                                fontSize: 10,
+
+                                textTransform:
+                                  "uppercase",
+
+                                letterSpacing:
+                                  "0.08em",
+
+                                marginBottom:
+                                  5,
+                              }}
+                            >
+                              Node ID
+                            </div>
+
+                            <div
+                              style={{
+                                color:
+                                  "#c9ced8",
+
+                                fontSize: 11,
+
+                                lineHeight:
+                                  1.5,
+
+                                fontFamily:
+                                  "Consolas, monospace",
+
+                                wordBreak:
+                                  "break-all",
+                              }}
+                            >
+                              {
+                                selectedGraphNode.id
+                              }
+                            </div>
+                          </div>
+
+                          {/* NEO4J PROPERTIES */}
+
+                          <div
+                            style={{
+                              paddingTop: 8,
+
+                              borderTop:
+                                "1px solid #242833",
+                            }}
+                          >
+                            <div
+                              style={{
+                                color:
+                                  "#686f80",
+
+                                fontSize: 10,
+
+                                textTransform:
+                                  "uppercase",
+
+                                letterSpacing:
+                                  "0.08em",
+
+                                marginBottom:
+                                  12,
+                              }}
+                            >
+                              Neo4j Properties
+                            </div>
+
+                            <div
+                              style={{
+                                display:
+                                  "grid",
+
+                                gap: 10,
+                              }}
+                            >
+                              {Object.entries(
+                                selectedGraphNode.properties ??
+                                {}
+                              ).map(
+                                ([
+                                  propertyName,
+                                  propertyValue,
+                                ]) => (
+                                  <div
+                                    key={
+                                      propertyName
+                                    }
+                                    style={{
+                                      padding:
+                                        "10px 11px",
+
+                                      border:
+                                        "1px solid #242833",
+
+                                      borderRadius:
+                                        9,
+
+                                      background:
+                                        "#0d1016",
+                                    }}
+                                  >
+                                    <div
+                                      style={{
+                                        color:
+                                          "#7d8596",
+
+                                        fontSize:
+                                          10,
+
+                                        textTransform:
+                                          "uppercase",
+
+                                        letterSpacing:
+                                          "0.06em",
+
+                                        marginBottom:
+                                          5,
+                                      }}
+                                    >
+                                      {
+                                        propertyName
+                                      }
+                                    </div>
+
+                                    <div
+                                      style={{
+                                        color:
+                                          "#e0e3ea",
+
+                                        fontSize:
+                                          12,
+
+                                        lineHeight:
+                                          1.5,
+
+                                        fontFamily:
+                                          "Consolas, monospace",
+
+                                        whiteSpace:
+                                          "pre-wrap",
+
+                                        wordBreak:
+                                          "break-word",
+                                      }}
+                                    >
+                                      {formatGraphPropertyValue(
+                                        propertyValue
+                                      )}
+                                    </div>
+                                  </div>
+                                )
+                              )}
+
+                              {Object.keys(
+                                selectedGraphNode.properties ??
+                                {}
+                              ).length === 0 && (
+                                <div
+                                  style={{
+                                    color:
+                                      "#747b8b",
+
+                                    fontSize:
+                                      12,
+                                  }}
+                                >
+                                  No Neo4j properties
+                                  available for this
+                                  node.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* RELATIONSHIPS */}
+
+                          <div
+                            style={{
+                              paddingTop:
+                                8,
+
+                              borderTop:
+                                "1px solid #242833",
+                            }}
+                          >
+                            <div
+                              style={{
+                                color:
+                                  "#686f80",
+
+                                fontSize: 10,
+
+                                textTransform:
+                                  "uppercase",
+
+                                letterSpacing:
+                                  "0.08em",
+
+                                marginBottom:
+                                  12,
+                              }}
+                            >
+                              Relationships
+                            </div>
+
+                            <div
+                              style={{
+                                display:
+                                  "grid",
+
+                                gridTemplateColumns:
+                                  "1fr 1fr",
+
+                                gap: 8,
+                              }}
+                            >
+                              <div
+                                style={{
+                                  padding:
+                                    12,
+
+                                  border:
+                                    "1px solid #242833",
+
+                                  borderRadius:
+                                    9,
+
+                                  background:
+                                    "#10131a",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    color:
+                                      "#687080",
+
+                                    fontSize: 10,
+                                  }}
+                                >
+                                  Incoming
+                                </div>
+
+                                <strong
+                                  style={{
+                                    display:
+                                      "block",
+
+                                    marginTop:
+                                      4,
+
+                                    fontSize:
+                                      18,
+                                  }}
+                                >
+                                  {
+                                    selectedNodeRelationships.incoming
+                                  }
+                                </strong>
+                              </div>
+
+                              <div
+                                style={{
+                                  padding:
+                                    12,
+
+                                  border:
+                                    "1px solid #242833",
+
+                                  borderRadius:
+                                    9,
+
+                                  background:
+                                    "#10131a",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    color:
+                                      "#687080",
+
+                                    fontSize: 10,
+                                  }}
+                                >
+                                  Outgoing
+                                </div>
+
+                                <strong
+                                  style={{
+                                    display:
+                                      "block",
+
+                                    marginTop:
+                                      4,
+
+                                    fontSize:
+                                      18,
+                                  }}
+                                >
+                                  {
+                                    selectedNodeRelationships.outgoing
+                                  }
+                                </strong>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </aside>
+                  )}
+                </div>
+
+                {/* LEGEND */}
+
+                <div
+                  className="graph-legend"
+                  style={{
+                    display:
+                      "flex",
+
+                    flexWrap:
+                      "wrap",
+
+                    gap: 18,
+
+                    marginTop: 14,
+                  }}
+                >
+                  <div>
+                    <span className="legend-dot file-dot" />
+
+                    File
+                  </div>
+
+                  <div>
+                    <span className="legend-dot class-dot" />
+
+                    Class
+                  </div>
+
+                  <div>
+                    <span className="legend-dot function-dot" />
+
+                    Function
+                  </div>
+
+                  <div
+                    style={{
+                      color:
+                        "#737a8b",
+                    }}
+                  >
+                    <strong
+                      style={{
+                        color:
+                          "#38bdf8",
+                      }}
+                    >
+                      CONTAINS
+                    </strong>
+
+                    {" · "}
+
+                    <strong
+                      style={{
+                        color:
+                          "#a78bfa",
+                      }}
+                    >
+                      IMPORTS
+                    </strong>
+
+                    {" · "}
+
+                    <strong
+                      style={{
+                        color:
+                          "#34d399",
+                      }}
+                    >
+                      CALLS
+                    </strong>
+                  </div>
+                </div>
+              </section>
+            )}
+          </>
+        )}
+
+        {/* ==========================
+            GETTING STARTED
+        =========================== */}
+
+        {!result.repository && (
+          <section className="getting-started">
+            <div className="section-heading">
+              <div>
+                <span className="eyebrow">
+                  GETTING STARTED
+                </span>
+
+                <h2>
+                  Turn a repository
+                  into an intelligent
+                  map.
+                </h2>
+              </div>
+            </div>
+
+            <div className="steps">
+              <Step
+                number="01"
+                title="Connect a repository"
+                description="Provide a public GitHub repository URL."
+              />
+
+              <Step
+                number="02"
+                title="Analyze the codebase"
+                description="CodeAtlas parses files, structure, dependencies, and repository history."
+              />
+
+              <Step
+                number="03"
+                title="Explore the system"
+                description="Use the dashboard, code explorer, and dependency graph to understand the codebase."
+              />
+
+              <Step
+                number="04"
+                title="Predict and explain"
+                description="AI and ML features will turn repository data into engineering insights."
+              />
+            </div>
+          </section>
+        )}
+      </main>
+
+      <footer className="footer">
+        <span>
+          CodeAtlas AI
+        </span>
+
+        <span>
+          Map. Understand.
+          Predict.
+        </span>
+      </footer>
+    </div>
   );
 }
 
